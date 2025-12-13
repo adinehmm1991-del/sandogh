@@ -1,0 +1,7 @@
+{
+  "platform": "static",
+  "app": "beautiful-rosalind-9f7xvvtsb",
+  "path": "dist",
+  "port": 80,
+  "error404": "index.html"
+}

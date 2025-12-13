@@ -1,0 +1,16 @@
+Django
+djangorestframework
+django-cors-headers
+django-jalali-date
+jdatetime
+kavenegar
+zeep
+requests
+Pillow
+dj-database-url
+psycopg2-binary
+python-dotenv
+drf-yasg
+gunicorn
+openpyxl
+setuptools

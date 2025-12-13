@@ -1,0 +1,29 @@
+/* 1. وارد کردن فونت وزیر */
+@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;700&display=swap');
+
+/* 2. تنظیمات اصلی صفحه */
+body {
+  margin: 0;
+  padding: 0;
+  direction: rtl; /* راست‌چین */
+  text-align: right;
+  font-family: 'Vazirmatn', 'Tahoma', sans-serif;
+  background-color: #f4f6f8; /* خاکستری خیلی روشن و استاندارد */
+  color: #333;
+  min-height: 100vh;
+}
+
+/* حذف تنظیمات flex مزاحم که باعث بهم ریختگی شده بود */
+#root {
+  width: 100%;
+}
+
+/* استایل لینک‌ها */
+a {
+  color: #1976d2;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
