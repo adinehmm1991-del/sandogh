@@ -1,1 +1,31 @@
 node_modules
+# Security
+.env
+.env.local
+
+# Database & Backups
+db.sqlite3
+*.sqlite3
+data.json
+backup.json
+export_data.py
+
+# Junk & Large Files
+*.zip
+*.rar
+*.tar.gz
+backend3.zip.zip
+backend4.zip.zip
+
+# Python & Django
+__pycache__/
+*.py[cod]
+venv/
+env/
+.idea/
+.vscode/
+
+# Node modules (Frontend)
+node_modules/
+dist/
+build/

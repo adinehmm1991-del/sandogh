@@ -23,10 +23,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-7@zdlz4od*&=vg%oxd$b0x#mz6%-gc6sjuzgl)fl4r_g38nmb!'
+# خواندن کلید از متغیرهای محیطی
+SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-default-key-for-dev')
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+# تنظیم دیباگ (در سرور باید False باشد)
+DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 
 ALLOWED_HOSTS = ['*']
 
@@ -144,6 +145,7 @@ import os
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 CORS_ALLOW_ALL_ORIGINS = True
+
 # تنظیمات مخصوص فریم‌ورک رست (API)
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [

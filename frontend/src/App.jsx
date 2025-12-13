@@ -18,7 +18,10 @@ import Profile from './Profile';
 import Withdraw from './Withdraw';
 import ForgotPassword from './ForgotPassword';
 import ChangePassword from './ChangePassword';
-import Family from './Family'; // <--- صفحه خانواده اضافه شد
+import Family from './Family';
+// --- صفحات جدید اضافه شدند ---
+import LoanRequest from './LoanRequest';
+import PointTransfer from './PointTransfer';
 
 // تنظیمات تم سایت
 const theme = createTheme({
@@ -120,11 +123,13 @@ function App() {
           <Route path="/deposit" element={<Deposit />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/withdraw" element={<Withdraw />} />
-          
-          {/* مسیرهای جدید که جا افتاده بودند */}
           <Route path="/family" element={<Family />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/change-password" element={<ChangePassword />} />
+          
+          {/* مسیرهای جدید برای وام و انتقال امتیاز */}
+          <Route path="/loans" element={<LoanRequest />} />
+          <Route path="/points" element={<PointTransfer />} />
         </Routes>
 
       </ThemeProvider>
