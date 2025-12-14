@@ -13,6 +13,10 @@ PATTERNS = {
     'verify_deposit': 'cc3bfe14-8635-4bc1-b533-b4241fe44763',
     'verify_withdraw': '70a2166f-1162-49e4-9e6b-fd14a97d8789',
     'monthly_reminder': '1aa96cf6-b745-4d95-9846-ca13494386b1',
+    'loan_request_admin': '8f158cdf-4c52-4bd2-a745-ff56b8a061c5',
+    'loan_result_user': '332668bb-4494-468e-9f8d-734bb0a124fc',
+    'transfer_request_admin': 'd8afc309-7d74-45fb-825f-8264413b2193',
+    'transfer_received_user': '81445c97-3db4-4c29-962a-f6a5313cdebe',
 }
 
 def send_pattern_sms(receptor, pattern_key, tokens):

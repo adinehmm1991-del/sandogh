@@ -1,67 +1,92 @@
 from django.contrib import admin
-from django.utils.html import format_html
-from jalali_date.admin import ModelAdminJalaliMixin
-from .models import Transaction, ProfitPeriod, ProfitDistribution, WithdrawalRequest
+from .models import Transaction, ProfitPeriod, ProfitDistribution, WithdrawalRequest, LoanRequest, PointLog, PointTransferRequest
+from django.contrib import messages
 
-# 1. تنظیمات تراکنش‌ها
+# 1. مدیریت تراکنش‌ها
 @admin.register(Transaction)
-class TransactionAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
-    list_display = ('user', 'get_amount_display', 'get_type_display', 'date', 'is_verified', 'effective_date')
+class TransactionAdmin(admin.ModelAdmin):
+    list_display = ('user', 'amount_display', 'transaction_type', 'date_jalali', 'is_verified')
     list_filter = ('transaction_type', 'is_verified', 'date')
     search_fields = ('user__full_name', 'user__phone_number', 'amount')
     ordering = ('-date',)
 
-    readonly_fields = ('profit_period',)
+    @admin.display(description='مبلغ (تومان)')
+    def amount_display(self, obj):
+        return f"{obj.amount:,}"
 
-    # نمایش مبلغ با جداکننده
-    def get_amount_display(self, obj):
-        return f"{obj.amount:,} تومان"
-    get_amount_display.short_description = 'مبلغ'
-    get_amount_display.admin_order_field = 'amount' # برای اینکه قابلیت سورت کردن حفظ شود
+    @admin.display(description='تاریخ')
+    def date_jalali(self, obj):
+        return obj.date.strftime("%Y/%m/%d | %H:%M")
 
-    def get_type_display(self, obj):
-        return obj.get_transaction_type_display()
-    get_type_display.short_description = 'نوع تراکنش'
-
-
-# 2. تنظیمات دوره‌های سود
+# 2. مدیریت دوره‌های سود
 @admin.register(ProfitPeriod)
-class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
-    list_display = ('name', 'start_date', 'end_date', 'get_total_profit_display', 'is_calculated', 'calculate_btn')
+class ProfitPeriodAdmin(admin.ModelAdmin):
+    list_display = ('name', 'start_date', 'end_date', 'total_profit_display', 'is_calculated')
     
-    def get_total_profit_display(self, obj):
-        return f"{obj.total_profit_amount:,} تومان"
-    get_total_profit_display.short_description = 'کل سود'
+    @admin.display(description='سود کل')
+    def total_profit_display(self, obj):
+        return f"{obj.total_profit_amount:,}"
 
-    def calculate_btn(self, obj):
-        return format_html(
-            '<a class="button" href="/api/accounting/calculate-profit/{}/" target="_blank" style="background-color: #28a745; color: white; padding: 5px 10px; border-radius: 5px; text-decoration: none;">محاسبه و تقسیم سود</a>',
-            obj.id
-        )
-    calculate_btn.short_description = "عملیات"
-    calculate_btn.allow_tags = True
-
-
-# 3. تنظیمات لیست توزیع سود
+# 3. مدیریت توزیع سود
 @admin.register(ProfitDistribution)
 class ProfitDistributionAdmin(admin.ModelAdmin):
-    list_display = ('user', 'period', 'calculated_score', 'get_profit_display')
+    list_display = ('user', 'period', 'calculated_score', 'profit_amount_display')
     list_filter = ('period',)
-    search_fields = ('user__full_name', 'user__phone_number')
+    
+    @admin.display(description='سود واریزی')
+    def profit_amount_display(self, obj):
+        return f"{obj.profit_amount:,}"
 
-    def get_profit_display(self, obj):
-        return f"{obj.profit_amount:,} تومان"
-    get_profit_display.short_description = 'سود تعلق گرفته'
-
-
-# 4. تنظیمات درخواست‌های برداشت
+# 4. درخواست‌های برداشت (با قابلیت تایید سریع)
 @admin.register(WithdrawalRequest)
-class WithdrawalRequestAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
-    list_display = ('user', 'get_amount_display', 'status', 'created_at')
-    list_filter = ('status', 'created_at')
-    search_fields = ('user__full_name', 'user__phone_number')
-    readonly_fields = ('created_at',)
+class WithdrawalRequestAdmin(admin.ModelAdmin):
+    list_display = ('user', 'amount_display', 'source_type', 'status', 'created_at_jalali')
+    list_filter = ('status', 'source_type')
+    list_editable = ('status',)  # امکان تغییر وضعیت مستقیم از لیست
+    search_fields = ('user__full_name',)
 
-    def get_amount_display(self, obj):
-        return f"{obj.amount:,} تومان"
-    get_amount_display.short_description = 'مبلغ درخواستی'
+    @admin.display(description='مبلغ')
+    def amount_display(self, obj):
+        return f"{obj.amount:,}"
+    
+    @admin.display(description='تاریخ درخواست')
+    def created_at_jalali(self, obj):
+        return obj.created_at.strftime("%Y/%m/%d")
+
+# 5. درخواست‌های وام (جدید)
+@admin.register(LoanRequest)
+class LoanRequestAdmin(admin.ModelAdmin):
+    list_display = ('user', 'amount_display', 'status', 'points_cost', 'created_at')
+    list_filter = ('status',)
+    list_editable = ('status', 'points_cost') # مدیر می‌تواند امتیاز کسر شده را همینجا وارد کند
+
+    @admin.display(description='مبلغ وام')
+    def amount_display(self, obj):
+        return f"{obj.amount:,}"
+
+# 6. سوابق امتیاز (Log)
+@admin.register(PointLog)
+class PointLogAdmin(admin.ModelAdmin):
+    list_display = ('user', 'points', 'log_type', 'related_user', 'created_at')
+    list_filter = ('log_type',)
+    search_fields = ('user__full_name',)
+
+# 7. درخواست انتقال امتیاز (جدید)
+@admin.register(PointTransferRequest)
+class PointTransferRequestAdmin(admin.ModelAdmin):
+    list_display = ('sender', 'receiver', 'amount', 'status', 'created_at')
+    list_filter = ('status',)
+    actions = ['approve_requests', 'reject_requests']
+
+    @admin.action(description='✅ تایید درخواست‌های انتخاب شده')
+    def approve_requests(self, request, queryset):
+        for req in queryset:
+            if req.status == 'PENDING':
+                req.status = 'APPROVED'
+                req.save() # متد save مدل صدا زده می‌شود و انتقال انجام می‌شود
+        self.message_user(request, "موارد انتخاب شده تایید و اعمال شدند.", messages.SUCCESS)
+
+    @admin.action(description='❌ رد درخواست‌های انتخاب شده')
+    def reject_requests(self, request, queryset):
+        queryset.update(status='REJECTED')
+        self.message_user(request, "موارد انتخاب شده رد شدند.", messages.WARNING)

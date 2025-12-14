@@ -37,8 +37,16 @@ function LoanRequest() {
       });
       setMsg({ type: 'success', text: 'درخواست وام ثبت شد.' });
       setAmount(''); setDesc(''); fetchLoans();
+   // در فایل LoanRequest.jsx داخل handleSubmit
+
     } catch (err) {
-      setMsg({ type: 'error', text: 'خطا در ثبت درخواست.' });
+      let errorText = 'خطا در ثبت درخواست.';
+      if (err.response && err.response.data) {
+          const data = err.response.data;
+          if (data.amount) errorText = data.amount[0]; // خطای سقف وام یا امتیاز ناکافی
+          else if (data.detail) errorText = data.detail;
+      }
+      setMsg({ type: 'error', text: errorText });
     } finally { setLoading(false); }
   };
 

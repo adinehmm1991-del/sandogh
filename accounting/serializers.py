@@ -2,6 +2,8 @@ from rest_framework import serializers
 # تغییر 1: اضافه کردن مدل‌های جدید به ایمپورت‌ها
 from .models import Transaction, WithdrawalRequest, LoanRequest, PointLog
 from users.models import User
+from django.db.models import Sum
+import datetime
 
 class TransactionSerializer(serializers.ModelSerializer):
     # فیلد اختیاری برای دریافت شناسه فرزند (فقط نوشتنی)
@@ -47,12 +49,65 @@ class TransactionSerializer(serializers.ModelSerializer):
         return transaction
 
 
+# ... (ایمپورت‌ها مثل قبل)
+from django.db.models import Sum
+
+# ... (TransactionSerializer مثل قبل باشد)
+
 class WithdrawalRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = WithdrawalRequest
-        # تغییر 2: اضافه شدن source_type به فیلدها
         fields = ['id', 'amount', 'source_type', 'description', 'status', 'created_at', 'admin_note']
         read_only_fields = ['id', 'status', 'created_at', 'admin_note']
+
+    def validate(self, data):
+        user = self.context['request'].user
+        amount = data.get('amount')
+        source_type = data.get('source_type')
+
+        # تعیین نوع تراکنش‌های ورودی بر اساس منبع انتخابی
+        related_deposit_types = []
+        related_withdrawal_types = []
+
+        if source_type == WithdrawalRequest.Source.LOAN_SAVING:
+            related_deposit_types = [Transaction.Types.LOAN_SAVING]
+            related_withdrawal_types = [Transaction.Types.WITHDRAWAL_SAVING]
+        
+        elif source_type == WithdrawalRequest.Source.PROFIT_SAVING:
+            related_deposit_types = [Transaction.Types.PROFIT_SAVING]
+            related_withdrawal_types = [Transaction.Types.WITHDRAWAL_PROFIT]
+            
+        elif source_type == WithdrawalRequest.Source.MONTHLY:
+            related_deposit_types = [Transaction.Types.MONTHLY_DEPOSIT]
+            related_withdrawal_types = [Transaction.Types.WITHDRAWAL_MONTHLY]
+            
+        elif source_type == WithdrawalRequest.Source.QARD:
+            related_deposit_types = [Transaction.Types.QARD_HASAN]
+            related_withdrawal_types = [Transaction.Types.WITHDRAWAL_QARD]
+
+        # محاسبه موجودی دقیق آن حساب
+        total_deposited = Transaction.objects.filter(
+            user=user, 
+            transaction_type__in=related_deposit_types, 
+            is_verified=True
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+
+        total_withdrawn = Transaction.objects.filter(
+            user=user, 
+            transaction_type__in=related_withdrawal_types, 
+            is_verified=True
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+
+        # اگر برداشت‌های کلی قدیمی هم هست، سخت‌گیرانه برخورد نمی‌کنیم چون تفکیک نشده‌اند
+        # اما برای سیستم جدید، موجودی دقیق را چک می‌کنیم
+        current_balance = total_deposited - total_withdrawn
+
+        if amount > current_balance:
+            raise serializers.ValidationError({
+                "amount": f"موجودی این حساب کافی نیست. موجودی فعلی: {current_balance:,} تومان"
+            })
+
+        return data
 
 
 # --- کلاس‌های جدید (تغییرات اضافه شده) ---
@@ -64,6 +119,53 @@ class LoanRequestSerializer(serializers.ModelSerializer):
         fields = ['id', 'amount', 'description', 'status', 'points_cost', 'created_at']
         read_only_fields = ['id', 'status', 'points_cost', 'created_at']
 
+    def validate(self, data):
+        amount = data.get('amount')
+        user = self.context['request'].user
+        
+        # 1. محدودیت سقف ۳۰ میلیون تومان
+        if amount > 30000000:
+            raise serializers.ValidationError({"amount": "سقف درخواست وام ۳۰ میلیون تومان است."})
+
+        # 2. محاسبه امتیاز کاربر (دقیقاً مشابه منطق ویو)
+        today = datetime.date.today()
+        
+        # الف) امتیاز زمانی
+        loan_transactions = Transaction.objects.filter(
+            user=user, transaction_type=Transaction.Types.LOAN_SAVING, is_verified=True
+        )
+        time_points = 0
+        for trans in loan_transactions:
+            days_active = (today - trans.effective_date).days
+            if days_active > 0:
+                daily_score = (trans.amount / 1000000) * 6000
+                time_points += int(daily_score * days_active)
+        
+        # ب) امتیاز بلاعوض (۲۰ درصد)
+        donation_total = Transaction.objects.filter(
+            user=user, transaction_type=Transaction.Types.DONATION, is_verified=True
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+        donation_points = int(donation_total * 0.20)
+        
+        # ج) امتیاز معرف
+        referral_count = Transaction.objects.filter(
+            user__referral_code=user.membership_code, transaction_type=Transaction.Types.MEMBERSHIP_FEE, is_verified=True
+        ).values('user').distinct().count()
+        referral_points = (referral_count // 5) * 1000000
+
+        # د) امتیاز دستی/انتقالی (مثبت یا منفی)
+        manual_points = PointLog.objects.filter(user=user).aggregate(Sum('points'))['points__sum'] or 0
+
+        # جمع کل امتیازات
+        total_eligible_points = time_points + donation_points + referral_points + manual_points
+
+        # 3. بررسی موجودی امتیاز
+        if amount > total_eligible_points:
+            raise serializers.ValidationError({
+                "amount": f"مبلغ درخواستی بیشتر از امتیاز شماست. حداکثر وام قابل دریافت: {total_eligible_points:,} تومان"
+            })
+
+        return data
 # تغییر 4: سریالایزر فرم انتقال امتیاز
 class PointTransferSerializer(serializers.Serializer):
     target_membership_code = serializers.CharField(max_length=50, label="کد عضویت مقصد")

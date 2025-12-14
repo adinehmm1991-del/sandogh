@@ -1,14 +1,9 @@
 {
-  "app": "sandogh-server",
   "platform": "django",
-  "port": 8000,
-  "disks": [
-    {
-      "name": "data",
-      "mountTo": "/usr/src/app/media"
-    }
-  ],
-  "cron": [
-    "30 6 * * * python manage.py send_reminders"
-  ]
+  "app": "sandogh-server",
+  "platformConfig": {
+    "application": "config.wsgi",
+    "pythonVersion": "3.10",
+    "djangoSettingsModule": "config.settings"
+  }
 }

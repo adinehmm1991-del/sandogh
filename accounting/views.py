@@ -2,16 +2,32 @@ from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.db.models import Sum
-# تغییر 1: اضافه شدن مدل‌های جدید
-from .models import Transaction, ProfitPeriod, ProfitDistribution, WithdrawalRequest, LoanRequest, PointLog
-# تغییر 2: اضافه شدن سریالایزرهای جدید
-from .serializers import (
-    TransactionSerializer, WithdrawalRequestSerializer, 
-    LoanRequestSerializer, PointTransferSerializer, PointLogSerializer
-)
-from users.models import User
 import datetime
 from decimal import Decimal
+
+# --- بخش ایمپورت مدل‌ها (تمیز و مرتب) ---
+from .models import (
+    Transaction, 
+    ProfitPeriod, 
+    ProfitDistribution, 
+    WithdrawalRequest, 
+    LoanRequest, 
+    PointLog, 
+    PointTransferRequest
+)
+
+# --- بخش ایمپورت سریالایزرها ---
+from .serializers import (
+    TransactionSerializer, 
+    WithdrawalRequestSerializer, 
+    LoanRequestSerializer, 
+    PointTransferSerializer, 
+    PointLogSerializer
+)
+
+from users.models import User
+
+# ... ادامه کدهای کلاس‌ها از اینجا به بعد ...
 
 # --- بخش اول: ثبت و نمایش تراکنش‌ها ---
 class TransactionListCreateView(generics.ListCreateAPIView):
@@ -382,6 +398,10 @@ class PointLogListView(generics.ListAPIView):
 
 
 # --- بخش هشتم: انتقال امتیاز (جدید - منطق اصلی) ---
+# یادتان باشد در بالای فایل models را کامل ایمپورت کنید:
+# from .models import Transaction, ..., PointTransferRequest
+
+# --- بخش هشتم: درخواست انتقال امتیاز (اصلاح شده با تایید مدیر) ---
 class PointTransferView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -405,7 +425,7 @@ class PointTransferView(APIView):
                 return Response({"error": "نمی‌توانید به خودتان انتقال دهید."}, status=400)
 
             # 2. محاسبه امتیاز فعلی کاربر (آیا امتیاز کافی دارد؟)
-            # (برای اطمینان، منطق محاسبه را اینجا به صورت خلاصه اجرا می‌کنیم)
+            # (کد محاسبات شما دقیقاً حفظ شده است)
             
             # الف) زمانی
             today = datetime.date.today()
@@ -429,28 +449,20 @@ class PointTransferView(APIView):
             
             current_total_points = sys_points + don_points + ref_points + man_points
 
+            # بررسی موجودی
             if current_total_points < points:
                 return Response({"error": f"موجودی امتیاز کافی نیست. موجودی شما: {current_total_points:,}"}, status=400)
 
-            # 3. انجام انتقال
-            # کسر از فرستنده
-            PointLog.objects.create(
-                user=user,
-                points=-points,
-                log_type=PointLog.Types.TRANSFER_SENT,
-                related_user=target_user,
-                description=f"انتقال امتیاز به {target_user.full_name} ({target_user.membership_code})"
-            )
-            
-            # اضافه به گیرنده
-            PointLog.objects.create(
-                user=target_user,
-                points=points,
-                log_type=PointLog.Types.TRANSFER_RECEIVED,
-                related_user=user,
-                description=f"دریافت امتیاز از {user.full_name} ({user.membership_code})"
+            # 3. ثبت درخواست (تغییر یافته: به جای انتقال مستقیم، درخواست ثبت می‌شود)
+            PointTransferRequest.objects.create(
+                sender=user,
+                receiver=target_user,
+                amount=points,
+                status=PointTransferRequest.Status.PENDING, # وضعیت در انتظار
+                description=f"درخواست انتقال امتیاز به {target_user.full_name} ({target_user.membership_code})"
             )
 
-            return Response({"message": "انتقال امتیاز با موفقیت انجام شد."})
+            # پیام موفقیت تغییر کرد
+            return Response({"message": "✅ درخواست انتقال امتیاز ثبت شد و پس از تایید مدیر انجام می‌شود."})
         
         return Response(serializer.errors, status=400)

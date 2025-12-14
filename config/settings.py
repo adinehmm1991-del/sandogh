@@ -133,7 +133,10 @@ USE_TZ = True
 import os
 STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, 'frontend/build/static'),  # آدرس فایل‌های بیلد شده ری‌اکت
+    # یا اگر پوشه dist دارید: os.path.join(BASE_DIR, 'frontend/dist/assets'),
+]
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 

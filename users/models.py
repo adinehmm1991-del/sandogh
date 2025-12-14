@@ -68,14 +68,32 @@ class User(AbstractUser):
     REQUIRED_FIELDS = []
 
     objects = CustomUserManager()
-
+    
     def save(self, *args, **kwargs):
         if not self.membership_code:
-            last_user = User.objects.order_by('id').last()
-            next_id = (last_user.id + 1) if last_user else 1
-            self.membership_code = f"313{next_id}"
-        super().save(*args, **kwargs)
+            # 1. پیدا کردن تمام کدهای موجود که با 313 شروع می‌شوند
+            existing_codes = User.objects.filter(membership_code__startswith='313').values_list('membership_code', flat=True)
+            
+            # 2. استخراج بخش عددی کدها (مثلاً از 31301 عدد 1 را می‌گیرد)
+            taken_numbers = set()
+            for code in existing_codes:
+                try:
+                    # فرض بر این است که کدها 313 + عدد هستند
+                    number_part = int(code[3:]) 
+                    taken_numbers.add(number_part)
+                except ValueError:
+                    continue
 
+            # 3. پیدا کردن اولین عدد خالی (از 1 به بالا چک می‌کنیم)
+            counter = 1
+            while True:
+                if counter not in taken_numbers:
+                    # این عدد خالی است! انتخابش کن.
+                    self.membership_code = f"313{counter}"
+                    break
+                counter += 1
+
+        super().save(*args, **kwargs)
     class Meta:
         verbose_name = _("کاربر")
         verbose_name_plural = _("کاربران")

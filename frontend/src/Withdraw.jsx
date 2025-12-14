@@ -34,9 +34,23 @@ function Withdraw() {
       
       setMessage({ type: 'success', text: '✅ درخواست برداشت با موفقیت ثبت شد.' });
       setTimeout(() => navigate('/dashboard'), 2000);
-    } catch (error) {
+   } catch (error) {
       console.error(error);
-      setMessage({ type: 'error', text: 'خطا در ثبت درخواست. لطفاً اتصال را چک کنید.' });
+      
+      // --- شروع تغییر: دریافت متن خطای فارسی ---
+      let errorText = 'خطا در ثبت درخواست.';
+      if (error.response && error.response.data) {
+          const data = error.response.data;
+          // اگر خطا مربوط به مبلغ باشد (مثلا موجودی کافی نیست)
+          if (data.amount) errorText = data.amount[0]; 
+          // اگر خطای کلی باشد
+          else if (data.error) errorText = data.error;
+          // اگر خطای توضیحات باشد
+          else if (data.detail) errorText = data.detail;
+      }
+      // --- پایان تغییر ---
+
+      setMessage({ type: 'error', text: errorText });
     } finally {
         setLoading(false);
     }

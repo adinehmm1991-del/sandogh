@@ -34,8 +34,17 @@ function PointTransfer() {
       );
       setMsg({ type: 'success', text: '✅ انتقال امتیاز با موفقیت انجام شد.' });
       setTargetCode(''); setPoints(''); fetchLogs();
+    // در فایل PointTransfer.jsx داخل handleTransfer
+
     } catch (err) {
-      setMsg({ type: 'error', text: err.response?.data?.error || 'خطا در انتقال.' });
+      let errorText = 'خطا در انتقال.';
+      if (err.response && err.response.data) {
+          const data = err.response.data;
+          if (data.error) errorText = data.error; // خطای موجودی کافی نیست
+          else if (data.target_membership_code) errorText = data.target_membership_code[0];
+          else if (data.points) errorText = data.points[0];
+      }
+      setMsg({ type: 'error', text: errorText });
     } finally { setLoading(false); }
   };
 

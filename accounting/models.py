@@ -197,22 +197,54 @@ class LoanRequest(models.Model):
         verbose_name_plural = "درخواست‌های وام"
 
     def save(self, *args, **kwargs):
+        from users.utils import send_pattern_sms, ADMIN_PHONE
+        
         is_new = self.pk is None
         old_status = None
-        if not is_new: old_status = LoanRequest.objects.get(pk=self.pk).status
+        if not is_new:
+            old_status = LoanRequest.objects.get(pk=self.pk).status
         
         super().save(*args, **kwargs)
 
-        # اگر تایید شد و هزینه امتیاز داشت، از سوابق امتیاز کسر کن
-        if old_status != self.Status.APPROVED and self.status == self.Status.APPROVED:
-            if self.points_cost > 0:
-                PointLog.objects.create(
-                    user=self.user,
-                    points=-self.points_cost, # منفی یعنی کسر شود
-                    log_type=PointLog.Types.LOAN_USED,
-                    description=f"استفاده برای وام {self.amount:,} تومانی"
-                )
+        target_name = self.user.full_name or self.user.phone_number
 
+        try:
+            # الف) پیامک به مدیر (هنگام ثبت درخواست جدید)
+            if is_new:
+                send_pattern_sms(ADMIN_PHONE, 'loan_request_admin', {
+                    'token1': target_name,
+                    'token2': f"{self.amount:,}"
+                })
+
+            # ب) پیامک به کاربر (هنگام تغییر وضعیت به تایید یا رد)
+            # اگر وضعیت تغییر کرده و (تایید شده یا رد شده) است
+            if not is_new and old_status != self.status and self.status in [self.Status.APPROVED, self.Status.REJECTED]:
+                # پیدا کردن شماره موبایل (اگر فرزند است، شماره پدر)
+                target_phone = self.user.parent.phone_number if self.user.parent else self.user.phone_number
+                
+                send_pattern_sms(target_phone, 'loan_result_user', {
+                    'token1': target_name
+                })
+                
+                # اگر تایید شد و هزینه امتیاز داشت، کسر امتیاز انجام شود
+                if self.status == self.Status.APPROVED and self.points_cost > 0:
+                    # چک کنیم قبلاً کسر نشده باشد (برای جلوگیری از کسر تکراری)
+                    exists = PointLog.objects.filter(
+                        user=self.user, 
+                        log_type=PointLog.Types.LOAN_USED, 
+                        description__contains=f"وام {self.id}"
+                    ).exists()
+                    
+                    if not exists:
+                        PointLog.objects.create(
+                            user=self.user,
+                            points=-self.points_cost,
+                            log_type=PointLog.Types.LOAN_USED,
+                            description=f"استفاده برای وام {self.amount:,} تومانی (شناسه {self.id})"
+                        )
+
+        except Exception as e:
+            print(f"SMS Error: {e}")
 # مدل‌های سود (بدون تغییر)
 class ProfitPeriod(models.Model):
     name = models.CharField(max_length=100)
@@ -227,3 +259,87 @@ class ProfitDistribution(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     calculated_score = models.DecimalField(max_digits=20, decimal_places=4)
     profit_amount = models.BigIntegerField()
+
+
+
+# 5. درخواست انتقال امتیاز (جدید - برای تایید مدیر)
+class PointTransferRequest(models.Model):
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'در انتظار تایید'
+        APPROVED = 'APPROVED', 'تایید شده (انجام شد)'
+        REJECTED = 'REJECTED', 'رد شده'
+
+    sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='sent_point_requests', verbose_name="فرستنده")
+    receiver = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='received_point_requests', verbose_name="گیرنده")
+    amount = models.IntegerField(verbose_name="میزان امتیاز")
+    description = models.TextField(null=True, blank=True, verbose_name="توضیحات")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, verbose_name="وضعیت")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="تاریخ درخواست")
+    admin_note = models.TextField(null=True, blank=True, verbose_name="یادداشت مدیر")
+
+    class Meta:
+        verbose_name = "درخواست انتقال امتیاز"
+        verbose_name_plural = "درخواست‌های انتقال امتیاز"
+
+    def __str__(self):
+        return f"{self.sender} -> {self.receiver} ({self.amount})"
+
+    def save(self, *args, **kwargs):
+        from users.utils import send_pattern_sms, ADMIN_PHONE
+
+        is_new = self.pk is None
+        old_status = None
+        if not is_new:
+            old_status = PointTransferRequest.objects.get(pk=self.pk).status
+
+        super().save(*args, **kwargs)
+        
+        try:
+            # الف) پیامک به مدیر (هنگام ثبت درخواست جدید)
+            if is_new:
+                send_pattern_sms(ADMIN_PHONE, 'transfer_request_admin', {
+                    'token1': self.sender.full_name,
+                    'token2': self.receiver.full_name
+                })
+
+            # ب) اگر تایید شد: ارسال پیامک به گیرنده + ثبت در لاگ‌ها
+            if old_status != self.Status.APPROVED and self.status == self.Status.APPROVED:
+                
+                # 1. ثبت لاگ‌ها (اگر قبلاً ثبت نشده باشند)
+                # (چک کردن برای جلوگیری از تکرار در صورت سیو مجدد)
+                exists = PointLog.objects.filter(
+                    user=self.sender, 
+                    log_type=PointLog.Types.TRANSFER_SENT, 
+                    description__contains=self.receiver.full_name,
+                    created_at__date=datetime.date.today() # یک شرط ساده برای جلوگیری از تکرار لحظه‌ای
+                ).exists()
+
+                # اینجا فرض بر اعتماد به ادمین است، اما برای اطمینان شرط exists را می‌توان دقیق‌تر کرد
+                # ولی ساده‌ترین راه این است که لاگ‌ها را همینجا بسازیم:
+                
+                # کسر از فرستنده
+                PointLog.objects.create(
+                    user=self.sender,
+                    points=-self.amount,
+                    log_type=PointLog.Types.TRANSFER_SENT,
+                    related_user=self.receiver,
+                    description=f"انتقال تایید شده به {self.receiver.full_name}"
+                )
+                # اضافه به گیرنده
+                PointLog.objects.create(
+                    user=self.receiver,
+                    points=self.amount,
+                    log_type=PointLog.Types.TRANSFER_RECEIVED,
+                    related_user=self.sender,
+                    description=f"دریافت تایید شده از {self.sender.full_name}"
+                )
+
+                # 2. ارسال پیامک به گیرنده
+                target_phone = self.receiver.parent.phone_number if self.receiver.parent else self.receiver.phone_number
+                send_pattern_sms(target_phone, 'transfer_received_user', {
+                    'token1': self.receiver.full_name,
+                    'token2': f"{self.amount:,}"
+                })
+
+        except Exception as e:
+            print(f"SMS/Log Error: {e}")

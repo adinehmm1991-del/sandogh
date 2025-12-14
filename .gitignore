@@ -27,5 +27,3 @@ env/
 
 # Node modules (Frontend)
 node_modules/
-dist/
-build/
