@@ -136,8 +136,8 @@ import os
 STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STATICFILES_DIRS = [
-    os.path.join(BASE_DIR, 'frontend/dist/assets'),  # آدرس فایل‌های بیلد شده ری‌اکت
-    os.path.join(BASE_DIR, 'frontend/dist'),
+    os.path.join(BASE_DIR, 'frontend/build_final/assets'),  # آدرس فایل‌های بیلد شده ری‌اکت
+    os.path.join(BASE_DIR, 'frontend/build_final'),
     # یا اگر پوشه dist دارید: os.path.join(BASE_DIR, 'frontend/dist/assets'),
 ]
 # Default primary key field type
