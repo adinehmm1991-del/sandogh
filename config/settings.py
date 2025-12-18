@@ -46,7 +46,8 @@ INSTALLED_APPS = [
     # --- ابزارهای جانبی نصب شده ---
     'rest_framework',
     'rest_framework.authtoken',    # برای ورود
-    'corsheaders',                 # برای دسترسی
+    'corsheaders',
+    'import_export',             
     'jalali_date',                 # تقویم شمسی
     'drf_yasg',                    # <--- این خط برای حل ارور شماست (مستندات Swagger)
 
@@ -57,6 +58,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -134,7 +136,8 @@ import os
 STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STATICFILES_DIRS = [
-    os.path.join(BASE_DIR, 'frontend/build/static'),  # آدرس فایل‌های بیلد شده ری‌اکت
+    os.path.join(BASE_DIR, 'frontend/dist/assets'),  # آدرس فایل‌های بیلد شده ری‌اکت
+    os.path.join(BASE_DIR, 'frontend/dist'),
     # یا اگر پوشه dist دارید: os.path.join(BASE_DIR, 'frontend/dist/assets'),
 ]
 # Default primary key field type

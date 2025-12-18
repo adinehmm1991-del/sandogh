@@ -5,7 +5,7 @@ from django.db.models import Sum
 import datetime
 from decimal import Decimal
 
-# --- بخش ایمپورت مدل‌ها (تمیز و مرتب) ---
+# --- بخش ایمپورت مدل‌ها ---
 from .models import (
     Transaction, 
     ProfitPeriod, 
@@ -27,7 +27,28 @@ from .serializers import (
 
 from users.models import User
 
-# ... ادامه کدهای کلاس‌ها از اینجا به بعد ...
+# --- تعریف لیست‌های کمکی (برای جلوگیری از خطای محاسباتی) ---
+# این لیست تضمین می‌کند که تراکنش‌ها فقط یکبار شمرده شوند
+ALL_WITHDRAWAL_TYPES = [
+    Transaction.Types.WITHDRAWAL_SAVING,
+    Transaction.Types.WITHDRAWAL_PROFIT,
+    Transaction.Types.WITHDRAWAL_MONTHLY,
+    Transaction.Types.WITHDRAWAL_QARD,
+    Transaction.Types.WITHDRAWAL_OTHER,
+    'WITHDRAWAL' # نوع قدیمی
+]
+
+PROFITABLE_TYPES = [
+    Transaction.Types.MONTHLY_DEPOSIT, 
+    Transaction.Types.PROFIT_SAVING
+]
+
+NON_PROFITABLE_TYPES = [
+    Transaction.Types.LOAN_SAVING, 
+    Transaction.Types.QARD_HASAN,
+    Transaction.Types.MEMBERSHIP_FEE,
+    Transaction.Types.DONATION
+]
 
 # --- بخش اول: ثبت و نمایش تراکنش‌ها ---
 class TransactionListCreateView(generics.ListCreateAPIView):
@@ -74,15 +95,6 @@ class CalculateProfitView(APIView):
             cp_date = period.start_date + datetime.timedelta(days=(i + 1) * step_duration)
             checkpoints.append(cp_date)
 
-        PROFITABLE_TYPES = [Transaction.Types.MONTHLY_DEPOSIT, Transaction.Types.PROFIT_SAVING]
-        
-        NON_PROFITABLE_TYPES = [
-            Transaction.Types.LOAN_SAVING, 
-            Transaction.Types.QARD_HASAN,
-            Transaction.Types.MEMBERSHIP_FEE,
-            Transaction.Types.DONATION
-        ]
-
         total_system_score = Decimal(0)
         distributed_profit = 0
         member_scores = {}
@@ -97,10 +109,11 @@ class CalculateProfitView(APIView):
                 is_verified=True
             ).aggregate(Sum('amount'))['amount__sum'] or 0
             
+            # اصلاح شده: استفاده از لیست دقیق برداشت‌ها
             withdrawal = Transaction.objects.filter(
                 user=user,
                 effective_date__lte=check_date,
-                transaction_type__in=[Transaction.Types.WITHDRAWAL_SAVING, Transaction.Types.WITHDRAWAL_PROFIT, Transaction.Types.WITHDRAWAL_MONTHLY, Transaction.Types.WITHDRAWAL_QARD, Transaction.Types.WITHDRAWAL_OTHER],
+                transaction_type__in=ALL_WITHDRAWAL_TYPES, # <--- اصلاح شد
                 is_verified=True
             ).aggregate(Sum('amount'))['amount__sum'] or 0
             
@@ -181,7 +194,7 @@ class CalculateProfitView(APIView):
         return Response({"status": "OK"})
 
 
-# --- بخش سوم: داشبورد کاربر (به‌روزرسانی با PointLog) ---
+# --- بخش سوم: داشبورد کاربر ---
 class UserDashboardView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -200,7 +213,7 @@ class UserDashboardView(APIView):
         def get_sum(queryset):
             return queryset.aggregate(Sum('amount'))['amount__sum'] or 0
 
-        # 1. محاسبه امتیاز سیستمی (زمانی)
+        # 1. محاسبه امتیاز سیستمی
         loan_transactions = Transaction.objects.filter(
             user=user, transaction_type=Transaction.Types.LOAN_SAVING, is_verified=True
         ).order_by('date')
@@ -234,14 +247,12 @@ class UserDashboardView(APIView):
 
         referral_loan_points = (active_referrals_count // 5) * 1000000
 
-        # 4. امتیازات دستی (جدید: شامل انتقال‌ها و وام‌های گرفته شده)
-        # اگر کاربر امتیاز گرفته باشد (مثبت) یا داده باشد/وام گرفته باشد (منفی)
+        # 4. امتیازات دستی
         manual_points = PointLog.objects.filter(user=user).aggregate(Sum('points'))['points__sum'] or 0
 
-        # --- محاسبه نهایی امتیاز قابل استفاده ---
+        # امتیاز کل
         total_loan_limit = (donation_points + loan_saving_points + referral_loan_points) + manual_points
         
-        # شرط 90 روز
         is_eligible_for_loan = False
         days_remaining_to_unlock = 0
         if days_passed_since_start >= 90:
@@ -250,7 +261,7 @@ class UserDashboardView(APIView):
              days_remaining_to_unlock = 90 - days_passed_since_start
 
 
-        # موجودی کل (آپدیت شده با انواع برداشت)
+        # موجودی کل (اصلاح شده: محاسبه دقیق برداشت‌ها)
         user_deposit_types = [
             Transaction.Types.MONTHLY_DEPOSIT, Transaction.Types.PROFIT_SAVING,
             Transaction.Types.LOAN_SAVING, Transaction.Types.QARD_HASAN,
@@ -260,13 +271,11 @@ class UserDashboardView(APIView):
             user=user, transaction_type__in=user_deposit_types, is_verified=True
         ))
         
-        # جمع تمام انواع برداشت‌ها
+        # --- اصلاح حیاتی: استفاده از لیست دقیق برای جلوگیری از شمارش دوبله ---
         user_withdrawals = get_sum(Transaction.objects.filter(
-            user=user, transaction_type__startswith='W_', is_verified=True
-        ))
-        # بعلاوه برداشت های قدیمی اگر تایپشان WITHDRAWAL بوده
-        user_withdrawals += get_sum(Transaction.objects.filter(
-            user=user, transaction_type='WITHDRAWAL', is_verified=True
+            user=user, 
+            transaction_type__in=ALL_WITHDRAWAL_TYPES, # فقط یک بار کوئری می‌زنیم با همه انواع
+            is_verified=True
         ))
 
         current_balance = user_deposits - user_withdrawals
@@ -292,12 +301,11 @@ class UserDashboardView(APIView):
             "is_active": has_paid_fee,
             "referrals_count": active_referrals_count,
             "loan_points_details": {
-                "total_limit": total_loan_limit, # امتیاز نهایی برای نمایش
+                "total_limit": total_loan_limit,
                 "from_donations": donation_points,
                 "from_savings": loan_saving_points,
                 "from_referrals": referral_loan_points,
-                "from_transfers": manual_points, # نمایش امتیاز دستی/انتقالی
-                
+                "from_transfers": manual_points,
                 "loan_amount_limit": total_loan_limit,
                 "has_loan_deposit": first_deposit_date is not None,
                 "is_eligible": is_eligible_for_loan,
@@ -307,7 +315,7 @@ class UserDashboardView(APIView):
         })
 
 
-# --- بخش چهارم: گزارش مدیریتی ---
+# --- بخش چهارم: گزارش مدیریتی (اصلاح شده) ---
 class GeneralReportView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -337,14 +345,11 @@ class GeneralReportView(APIView):
         total_donation = get_total(Transaction.Types.DONATION)
         total_fee = get_total(Transaction.Types.MEMBERSHIP_FEE)
         
-        # جمع تمام برداشت‌ها
-        w1 = get_total(Transaction.Types.WITHDRAWAL_SAVING)
-        w2 = get_total(Transaction.Types.WITHDRAWAL_PROFIT)
-        w3 = get_total(Transaction.Types.WITHDRAWAL_MONTHLY)
-        w4 = get_total(Transaction.Types.WITHDRAWAL_QARD)
-        w5 = get_total(Transaction.Types.WITHDRAWAL_OTHER)
-        w_old = get_total('WITHDRAWAL')
-        total_withdrawal = w1 + w2 + w3 + w4 + w5 + w_old
+        # --- اصلاح حیاتی: جمع کل برداشت‌ها با استفاده از لیست دقیق ---
+        total_withdrawal = Transaction.objects.filter(
+            transaction_type__in=ALL_WITHDRAWAL_TYPES, # استفاده از همان لیست امن
+            is_verified=True
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
 
         total_capital = (total_monthly_deposit + total_profit_saving + 
                          total_loan_saving + total_qard + total_donation + total_fee) - total_withdrawal
@@ -376,7 +381,7 @@ class WithdrawalRequestListCreateView(generics.ListCreateAPIView):
         serializer.save(user=self.request.user)
 
 
-# --- بخش ششم: درخواست وام (جدید) ---
+# --- بخش ششم: درخواست وام ---
 class LoanRequestListCreateView(generics.ListCreateAPIView):
     serializer_class = LoanRequestSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -388,7 +393,7 @@ class LoanRequestListCreateView(generics.ListCreateAPIView):
         serializer.save(user=self.request.user)
 
 
-# --- بخش هفتم: لیست سوابق امتیاز (جدید) ---
+# --- بخش هفتم: لیست سوابق امتیاز ---
 class PointLogListView(generics.ListAPIView):
     serializer_class = PointLogSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -397,11 +402,7 @@ class PointLogListView(generics.ListAPIView):
         return PointLog.objects.filter(user=self.request.user).order_by('-created_at')
 
 
-# --- بخش هشتم: انتقال امتیاز (جدید - منطق اصلی) ---
-# یادتان باشد در بالای فایل models را کامل ایمپورت کنید:
-# from .models import Transaction, ..., PointTransferRequest
-
-# --- بخش هشتم: درخواست انتقال امتیاز (اصلاح شده با تایید مدیر) ---
+# --- بخش هشتم: درخواست انتقال امتیاز ---
 class PointTransferView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -415,7 +416,6 @@ class PointTransferView(APIView):
             if points <= 0:
                 return Response({"error": "امتیاز باید بیشتر از صفر باشد."}, status=400)
 
-            # 1. پیدا کردن گیرنده
             try:
                 target_user = User.objects.get(membership_code=target_code)
             except User.DoesNotExist:
@@ -424,10 +424,7 @@ class PointTransferView(APIView):
             if target_user.id == user.id:
                 return Response({"error": "نمی‌توانید به خودتان انتقال دهید."}, status=400)
 
-            # 2. محاسبه امتیاز فعلی کاربر (آیا امتیاز کافی دارد؟)
-            # (کد محاسبات شما دقیقاً حفظ شده است)
-            
-            # الف) زمانی
+            # محاسبه امتیاز
             today = datetime.date.today()
             l_trans = Transaction.objects.filter(user=user, transaction_type='LOAN_SAVING', is_verified=True)
             sys_points = 0
@@ -436,33 +433,28 @@ class PointTransferView(APIView):
                     d = (today - t.effective_date).days
                     if d > 0: sys_points += int((t.amount / 1000000) * 6000 * d)
             
-            # ب) بلاعوض
             don = Transaction.objects.filter(user=user, transaction_type='DONATION', is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
             don_points = int(don * 0.20)
             
-            # ج) معرف
             refs = Transaction.objects.filter(user__referral_code=user.membership_code, transaction_type='FEE', is_verified=True).values('user').distinct().count()
             ref_points = (refs // 5) * 1000000
             
-            # د) دستی
             man_points = PointLog.objects.filter(user=user).aggregate(Sum('points'))['points__sum'] or 0
             
             current_total_points = sys_points + don_points + ref_points + man_points
 
-            # بررسی موجودی
             if current_total_points < points:
                 return Response({"error": f"موجودی امتیاز کافی نیست. موجودی شما: {current_total_points:,}"}, status=400)
 
-            # 3. ثبت درخواست (تغییر یافته: به جای انتقال مستقیم، درخواست ثبت می‌شود)
+            # ثبت درخواست
             PointTransferRequest.objects.create(
                 sender=user,
                 receiver=target_user,
                 amount=points,
-                status=PointTransferRequest.Status.PENDING, # وضعیت در انتظار
+                status=PointTransferRequest.Status.PENDING,
                 description=f"درخواست انتقال امتیاز به {target_user.full_name} ({target_user.membership_code})"
             )
 
-            # پیام موفقیت تغییر کرد
             return Response({"message": "✅ درخواست انتقال امتیاز ثبت شد و پس از تایید مدیر انجام می‌شود."})
         
         return Response(serializer.errors, status=400)

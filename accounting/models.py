@@ -5,7 +5,7 @@ from django.db.models import Sum
 import datetime
 import jdatetime
 
-# 1. ثبت سوابق دستی امتیاز (انتقال یا استفاده) - (جدید)
+# 1. ثبت سوابق دستی امتیاز
 class PointLog(models.Model):
     class Types(models.TextChoices):
         TRANSFER_SENT = 'SENT', 'انتقال به دیگران (کسر)'
@@ -17,8 +17,6 @@ class PointLog(models.Model):
     log_type = models.CharField(max_length=10, choices=Types.choices, verbose_name="نوع عملیات")
     description = models.TextField(verbose_name="توضیحات")
     created_at = models.DateTimeField(auto_now_add=True)
-    
-    # کاربر مرتبط (مثلاً کسی که امتیاز را به او داده‌ایم)
     related_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='point_related', verbose_name="کاربر مرتبط")
 
     class Meta:
@@ -29,7 +27,7 @@ class PointLog(models.Model):
         return f"{self.user} - {self.points} ({self.get_log_type_display()})"
 
 
-# 2. جدول تراکنش‌ها (تغییر یافته)
+# 2. جدول تراکنش‌ها
 class Transaction(models.Model):
     class Types(models.TextChoices):
         MONTHLY_DEPOSIT = 'MONTHLY', 'واریز ماهیانه (تعهد)'
@@ -39,7 +37,7 @@ class Transaction(models.Model):
         DONATION = 'DONATION', 'بلاعوض (کمک خیریه)'
         MEMBERSHIP_FEE = 'FEE', 'حق عضویت'
         
-        # انواع جدید برداشت (تفکیک شده)
+        # انواع برداشت
         WITHDRAWAL_SAVING = 'W_SAVING', 'برداشت از پس‌انداز وام'
         WITHDRAWAL_PROFIT = 'W_PROFIT', 'برداشت از سود'
         WITHDRAWAL_MONTHLY = 'W_MONTHLY', 'برداشت از ماهیانه'
@@ -63,7 +61,17 @@ class Transaction(models.Model):
     def save(self, *args, **kwargs):
         from users.utils import send_pattern_sms, ADMIN_PHONE
         
-        # 1. تنظیم هوشمند تاریخ مؤثر (قانون ۵ روز اول ماه)
+        # لیست امن برای تشخیص برداشت‌ها (هماهنگ با views.py)
+        ALL_WITHDRAWAL_TYPES = [
+            self.Types.WITHDRAWAL_SAVING,
+            self.Types.WITHDRAWAL_PROFIT,
+            self.Types.WITHDRAWAL_MONTHLY,
+            self.Types.WITHDRAWAL_QARD,
+            self.Types.WITHDRAWAL_OTHER,
+            'WITHDRAWAL'
+        ]
+
+        # 1. تنظیم هوشمند تاریخ مؤثر
         if not self.effective_date:
             base_date = self.date if self.date else datetime.datetime.now()
             j_date = jdatetime.date.fromgregorian(date=base_date.date())
@@ -93,15 +101,16 @@ class Transaction(models.Model):
             raw_type = str(self.get_transaction_type_display())
             clean_type = raw_type.split('(')[0].strip()
 
-            # الف) پیامک به مدیر (فقط برای ثبت جدید)
-            if is_new and not self.is_verified and not self.transaction_type.startswith('W_') and self.transaction_type != 'WITHDRAWAL':
+            # شرط: اگر جزء لیست برداشت‌ها نباشد => یعنی واریز است
+            is_deposit = self.transaction_type not in ALL_WITHDRAWAL_TYPES
+
+            # الف) پیامک به مدیر (فقط برای ثبت جدید واریزها)
+            if is_new and not self.is_verified and is_deposit:
                 send_pattern_sms(ADMIN_PHONE, 'admin_alert', {'token1': clean_type, 'token2': target_name, 'token3': f"{self.amount:,}"})
 
-            # ب) پیامک تایید به کاربر
-            if not old_verified and self.is_verified:
-                if not self.transaction_type.startswith('W_') and self.transaction_type != 'WITHDRAWAL':
-                    # پیامک تایید واریز
-                    send_pattern_sms(target_phone, 'verify_deposit', {'token1': target_name, 'token2': clean_type, 'token3': f"{self.amount:,}"})
+            # ب) پیامک تایید به کاربر (فقط برای واریزها)
+            if not old_verified and self.is_verified and is_deposit:
+                 send_pattern_sms(target_phone, 'verify_deposit', {'token1': target_name, 'token2': clean_type, 'token3': f"{self.amount:,}"})
         except: pass
 
     class Meta:
@@ -110,7 +119,7 @@ class Transaction(models.Model):
     def __str__(self): return f"{self.user} - {self.amount}"
 
 
-# 3. درخواست برداشت (اصلاح شده با منبع)
+# 3. درخواست برداشت
 class WithdrawalRequest(models.Model):
     class Status(models.TextChoices):
         PENDING = 'PENDING', 'در انتظار'
@@ -126,10 +135,7 @@ class WithdrawalRequest(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, verbose_name="کاربر")
     amount = models.BigIntegerField(verbose_name="مبلغ (تومان)")
     description = models.TextField(null=True, blank=True, verbose_name="شماره کارت/شبا")
-    
-    # فیلد جدید: منبع برداشت
     source_type = models.CharField(max_length=10, choices=Source.choices, default=Source.LOAN_SAVING, verbose_name="محل کسر وجه")
-    
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, verbose_name="وضعیت")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="تاریخ درخواست")
     admin_note = models.TextField(null=True, blank=True, verbose_name="پاسخ مدیر")
@@ -156,7 +162,6 @@ class WithdrawalRequest(models.Model):
 
             # اگر تایید شد، تراکنش برداشت ثبت کن
             if old_status != self.Status.APPROVED and self.status == self.Status.APPROVED:
-                # تشخیص نوع تراکنش بر اساس منبع
                 t_type = Transaction.Types.WITHDRAWAL_OTHER
                 if self.source_type == self.Source.LOAN_SAVING: t_type = Transaction.Types.WITHDRAWAL_SAVING
                 elif self.source_type == self.Source.PROFIT_SAVING: t_type = Transaction.Types.WITHDRAWAL_PROFIT
@@ -176,7 +181,7 @@ class WithdrawalRequest(models.Model):
         except: pass
 
 
-# 4. درخواست وام (جدید)
+# 4. درخواست وام
 class LoanRequest(models.Model):
     class Status(models.TextChoices):
         PENDING = 'PENDING', 'در انتظار'
@@ -188,8 +193,6 @@ class LoanRequest(models.Model):
     description = models.TextField(null=True, blank=True, verbose_name="توضیحات")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, verbose_name="وضعیت")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="تاریخ درخواست")
-    
-    # فیلد امتیاز کسر شده (که مدیر موقع تایید پر میکند)
     points_cost = models.BigIntegerField(default=0, verbose_name="امتیاز کسر شده")
 
     class Meta:
@@ -209,26 +212,20 @@ class LoanRequest(models.Model):
         target_name = self.user.full_name or self.user.phone_number
 
         try:
-            # الف) پیامک به مدیر (هنگام ثبت درخواست جدید)
             if is_new:
                 send_pattern_sms(ADMIN_PHONE, 'loan_request_admin', {
                     'token1': target_name,
                     'token2': f"{self.amount:,}"
                 })
 
-            # ب) پیامک به کاربر (هنگام تغییر وضعیت به تایید یا رد)
-            # اگر وضعیت تغییر کرده و (تایید شده یا رد شده) است
             if not is_new and old_status != self.status and self.status in [self.Status.APPROVED, self.Status.REJECTED]:
-                # پیدا کردن شماره موبایل (اگر فرزند است، شماره پدر)
                 target_phone = self.user.parent.phone_number if self.user.parent else self.user.phone_number
                 
                 send_pattern_sms(target_phone, 'loan_result_user', {
                     'token1': target_name
                 })
                 
-                # اگر تایید شد و هزینه امتیاز داشت، کسر امتیاز انجام شود
                 if self.status == self.Status.APPROVED and self.points_cost > 0:
-                    # چک کنیم قبلاً کسر نشده باشد (برای جلوگیری از کسر تکراری)
                     exists = PointLog.objects.filter(
                         user=self.user, 
                         log_type=PointLog.Types.LOAN_USED, 
@@ -242,10 +239,10 @@ class LoanRequest(models.Model):
                             log_type=PointLog.Types.LOAN_USED,
                             description=f"استفاده برای وام {self.amount:,} تومانی (شناسه {self.id})"
                         )
-
         except Exception as e:
             print(f"SMS Error: {e}")
-# مدل‌های سود (بدون تغییر)
+
+# مدل‌های سود
 class ProfitPeriod(models.Model):
     name = models.CharField(max_length=100)
     start_date = models.DateField()
@@ -261,8 +258,7 @@ class ProfitDistribution(models.Model):
     profit_amount = models.BigIntegerField()
 
 
-
-# 5. درخواست انتقال امتیاز (جدید - برای تایید مدیر)
+# 5. درخواست انتقال امتیاز
 class PointTransferRequest(models.Model):
     class Status(models.TextChoices):
         PENDING = 'PENDING', 'در انتظار تایید'
@@ -295,29 +291,16 @@ class PointTransferRequest(models.Model):
         super().save(*args, **kwargs)
         
         try:
-            # الف) پیامک به مدیر (هنگام ثبت درخواست جدید)
             if is_new:
                 send_pattern_sms(ADMIN_PHONE, 'transfer_request_admin', {
                     'token1': self.sender.full_name,
                     'token2': self.receiver.full_name
                 })
 
-            # ب) اگر تایید شد: ارسال پیامک به گیرنده + ثبت در لاگ‌ها
             if old_status != self.Status.APPROVED and self.status == self.Status.APPROVED:
+                # اصلاح مهم: حذف شرط exists تاریخ‌دار که باعث باگ در انتقال‌های متعدد می‌شد.
+                # همین که وضعیت از غیر تایید به تایید تغییر کرده، یعنی باید لاگ ثبت شود.
                 
-                # 1. ثبت لاگ‌ها (اگر قبلاً ثبت نشده باشند)
-                # (چک کردن برای جلوگیری از تکرار در صورت سیو مجدد)
-                exists = PointLog.objects.filter(
-                    user=self.sender, 
-                    log_type=PointLog.Types.TRANSFER_SENT, 
-                    description__contains=self.receiver.full_name,
-                    created_at__date=datetime.date.today() # یک شرط ساده برای جلوگیری از تکرار لحظه‌ای
-                ).exists()
-
-                # اینجا فرض بر اعتماد به ادمین است، اما برای اطمینان شرط exists را می‌توان دقیق‌تر کرد
-                # ولی ساده‌ترین راه این است که لاگ‌ها را همینجا بسازیم:
-                
-                # کسر از فرستنده
                 PointLog.objects.create(
                     user=self.sender,
                     points=-self.amount,
@@ -325,7 +308,6 @@ class PointTransferRequest(models.Model):
                     related_user=self.receiver,
                     description=f"انتقال تایید شده به {self.receiver.full_name}"
                 )
-                # اضافه به گیرنده
                 PointLog.objects.create(
                     user=self.receiver,
                     points=self.amount,
@@ -334,7 +316,6 @@ class PointTransferRequest(models.Model):
                     description=f"دریافت تایید شده از {self.sender.full_name}"
                 )
 
-                # 2. ارسال پیامک به گیرنده
                 target_phone = self.receiver.parent.phone_number if self.receiver.parent else self.receiver.phone_number
                 send_pattern_sms(target_phone, 'transfer_received_user', {
                     'token1': self.receiver.full_name,

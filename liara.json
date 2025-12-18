@@ -5,5 +5,11 @@
     "application": "config.wsgi",
     "pythonVersion": "3.10",
     "djangoSettingsModule": "config.settings"
-  }
+  },
+  "disks": [
+    {
+      "name": "data",
+      "mountTo": "/usr/src/app/media"
+    }
+  ]
 }
