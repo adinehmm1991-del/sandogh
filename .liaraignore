@@ -10,3 +10,9 @@ __pycache__
 *.log
 frontend/node_modules
 node_modules
+staticfiles
+frontend/package.json
+frontend/package-lock.json
+package-lock.json
+package.json
+frontend/node_modules/

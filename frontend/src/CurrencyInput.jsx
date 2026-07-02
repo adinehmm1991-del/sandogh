@@ -34,7 +34,8 @@ function CurrencyInput({ label, value, onChange, name, ...props }) {
       name={name}
       dir="ltr"
       InputProps={{
-        endAdornment: <InputAdornment position="start">تومان</InputAdornment>,
+        // تغییر مهم: کلمه تومان به سمت چپ (Start) منتقل شد
+        startAdornment: <InputAdornment position="start">تومان</InputAdornment>,
       }}
     />
   );

@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Container, Paper, Typography, Grid, Card, CardContent, Button, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Chip, Divider, Box } from '@mui/material';
+import { Container, Paper, Typography, Grid, Card, CardContent, Button, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Chip, Divider, Box, TablePagination } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 
-// آیکون‌ها
 import AddIcon from '@mui/icons-material/Add';
 import RemoveIcon from '@mui/icons-material/Remove';
 import EditIcon from '@mui/icons-material/Edit';
@@ -15,16 +14,26 @@ import GroupAddIcon from '@mui/icons-material/GroupAdd';
 import KeyIcon from '@mui/icons-material/Key';
 import FamilyRestroomIcon from '@mui/icons-material/FamilyRestroom';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import SwapHorizIcon from '@mui/icons-material/SwapHoriz'; // آیکون انتقال
+import SwapHorizIcon from '@mui/icons-material/SwapHoriz'; 
+import ShowChartIcon from '@mui/icons-material/ShowChart';
 
 function Dashboard() {
   const [data, setData] = useState(null);
   const [adminReport, setAdminReport] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
-  const navigate = useNavigate();
+  
+  // --- استیت‌های مربوط به صفحه‌بندی ---
+  
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
 
-  const BASE_URL = 'https://sandogh-server.liara.run';
+  const navigate = useNavigate();
+  const BASE_URL = '';
+
+  // --- جراحی: استخراج آیدی زیرمجموعه در سطح کل کامپوننت برای دکمه‌ها ---
+  const queryParams = new URLSearchParams(window.location.search);
+  const targetUserId = queryParams.get('user_id');
 
   useEffect(() => {
     const fetchData = async () => {
@@ -32,17 +41,16 @@ function Dashboard() {
       if (!token) { navigate('/'); return; }
       const config = { headers: { Authorization: `Token ${token}` } };
 
-      const queryParams = new URLSearchParams(window.location.search);
-      const targetUserId = queryParams.get('user_id');
-
       try {
         const timeStamp = `_t=${Date.now()}`;
-        let dashboardUrl = `${BASE_URL}/api/accounting/dashboard/?${timeStamp}`;
-        let transactionsUrl = `${BASE_URL}/api/accounting/transactions/?${timeStamp}`;
+        let dashboardUrl = `/api/accounting/dashboard/?${timeStamp}`;
+        let transactionsUrl = `/api/accounting/transactions/?${timeStamp}`;
+        let withdrawalsUrl = `/api/accounting/withdrawals/?${timeStamp}`; 
         
         if (targetUserId) {
             dashboardUrl += `&user_id=${targetUserId}`;
             transactionsUrl += `&user_id=${targetUserId}`;
+            withdrawalsUrl += `&user_id=${targetUserId}`;
         }
 
         const res = await axios.get(dashboardUrl, config);
@@ -57,14 +65,31 @@ function Dashboard() {
 
         if (!targetUserId && (res.data.role === 'ADMIN' || res.data.role === 'OBSERVER')) {
             try {
-                const reportRes = await axios.get(`${BASE_URL}/api/accounting/general-report/?${timeStamp}`, config);
+                const reportRes = await axios.get(`/api/accounting/general-report/?${timeStamp}`, config);
                 setAdminReport(reportRes.data);
             } catch (err) { console.error(err); }
         }
 
         const transRes = await axios.get(transactionsUrl, config);
-        setTransactions(transRes.data);
         
+        let pendingWithdrawals = [];
+        try {
+            const withRes = await axios.get(withdrawalsUrl, config);
+            pendingWithdrawals = withRes.data
+                .filter(w => w.status === 'PENDING')
+                .map(w => ({
+                    id: `w_${w.id}`,
+                    amount: w.amount,
+                    transaction_type: 'WITHDRAWAL_OTHER', 
+                    date: w.created_at,
+                    is_verified: false 
+                }));
+        } catch (e) { console.error("Error fetching withdrawals", e); }
+
+        const allTrans = [...transRes.data, ...pendingWithdrawals]
+            .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        setTransactions(allTrans);
         setLoading(false);
       } catch (error) {
         if (error.response?.status === 401) { localStorage.removeItem('token'); navigate('/'); }
@@ -77,21 +102,42 @@ function Dashboard() {
 
   const handleLogout = () => { localStorage.removeItem('token'); navigate('/'); };
 
-  // ترجمه انواع تراکنش (شامل موارد جدید)
+  const handleChangePage = (event, newPage) => { setPage(newPage); };
+  const handleChangeRowsPerPage = (event) => {
+    setRowsPerPage(parseInt(event.target.value, 10));
+    setPage(0);
+  };
+
   const typeTranslate = {
-    'MONTHLY': 'واریز ماهیانه',
-    'PROFIT_SAVING': 'پس‌انداز سود',
+    'SHORT_TERM': 'پس‌انداز کوتاه‌مدت',
+    'LONG_TERM': 'پس‌انداز بلندمدت',
+    'MONTHLY': 'پس‌انداز بلندمدت', 
+    'PROFIT_SAVING': 'پس‌انداز بلندمدت', 
     'LOAN_SAVING': 'پس‌انداز وام',
     'QARD': 'قرض‌الحسنه',
-    'DONATION': 'بلاعوض',
     'FEE': 'حق عضویت',
-    'WITHDRAWAL': 'برداشت وجه',
-    // انواع جدید برداشت
+    'MANUAL_PROFIT': 'سود واریزی',
+    'SADAQAH': 'صدقه',
+    'SACRIFICE': 'قربانی',
+    'BOOK': 'کتاب',
+    'KHOMS_IMAM': 'سهم امام',
+    'KHOMS_SADAT': 'سهم سادات',
+    'WAQF': 'وقف (قدیم)',
+    'WAQF_GEN': 'وقف عام',
+    'WAQF_BOOK': 'وقف خاص (کتاب)',
+    'WAQF_MEDIA': 'وقف خاص (محتوا)',
+    'WAQF_INFRA': 'وقف خاص (زیرساخت)',
+    'W_SHORT': 'برداشت (کوتاه‌مدت)',
+    'W_LONG': 'برداشت (بلندمدت)',
     'W_SAVING': 'برداشت (پس‌انداز وام)',
-    'W_PROFIT': 'برداشت (سود)',
-    'W_MONTHLY': 'برداشت (ماهیانه)',
+    'W_PROFIT': 'برداشت (بلندمدت)', 
+    'W_MONTHLY': 'برداشت (بلندمدت)', 
     'W_QARD': 'برداشت (قرض‌الحسنه)',
-    'WITHDRAWAL_OTHER': 'برداشت'
+    'WITHDRAWAL_OTHER': 'برداشت وجه',
+    'WITHDRAWAL': 'برداشت وجه',
+    'W_FEE': 'برداشت (حق عضویت)',
+    'W_MAN_PROFIT': 'برداشت از سود',
+    'W_CULTURAL': 'برداشت (امور فرهنگی)'
   };
 
   if (loading) return <div style={{textAlign: 'center', marginTop: '50px'}}>در حال بارگذاری...</div>;
@@ -100,36 +146,47 @@ function Dashboard() {
   return (
     <Container maxWidth="md" style={{ marginTop: '30px', marginBottom: '50px' }}>
       
-      {/* گزارش مدیر */}
       {adminReport && (
         <Paper elevation={3} style={{ padding: '20px', marginBottom: '30px', borderTop: '5px solid #2e7d32', backgroundColor: '#f1f8e9' }}>
             <div style={{display:'flex', alignItems:'center', marginBottom:'15px', justifyContent:'space-between'}}>
                 <div style={{display:'flex', alignItems:'center'}}>
                     <AdminPanelSettingsIcon color="success" style={{marginLeft:'10px'}}/>
-                    <Typography variant="h6" color="success">گزارش کلی صندوق</Typography>
+                    <Typography variant="h6" color="success">گزارش کلان صندوق و امور فرهنگی</Typography>
                 </div>
                 <div style={{display:'flex', gap:'15px', fontSize:'0.9rem'}}>
-                    <span style={{color:'#2e7d32', fontWeight:'bold'}}>✅ فعال: {adminReport.active_members}</span>
-                    <span style={{color:'#c62828', fontWeight:'bold'}}>❌ غیرفعال: {adminReport.inactive_members}</span>
+                    <span style={{color:'#2e7d32', fontWeight:'bold'}}>✅ اعضای فعال: {adminReport.active_members}</span>
                 </div>
             </div>
             <Divider style={{marginBottom:'15px'}} />
             <Grid container spacing={2}>
-                <Grid item xs={6} md={3}><Typography variant="body2">تعداد اعضا: <strong>{adminReport.total_members}</strong></Typography></Grid>
-                <Grid item xs={6} md={3}><Typography variant="body2">کل سرمایه: <strong>{adminReport.total_capital?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="body2">کل اعضای سیستم: <strong>{adminReport.total_members}</strong></Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="body2">موجودی کل صندوق: <strong>{adminReport.total_capital?.toLocaleString()}</strong></Typography></Grid>
                 <Grid item xs={6} md={3}><Typography variant="body2">پس‌انداز وام: <strong>{adminReport.total_loan_saving?.toLocaleString()}</strong></Typography></Grid>
-                <Grid item xs={6} md={3}><Typography variant="body2">پس‌انداز سود: <strong>{adminReport.total_profit_saving?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="body2">پس‌انداز سودده: <strong>{adminReport.total_profit_saving?.toLocaleString()}</strong></Typography></Grid>
                 <Grid item xs={6} md={3}><Typography variant="body2">قرض‌الحسنه: <strong>{adminReport.total_qard?.toLocaleString()}</strong></Typography></Grid>
-                <Grid item xs={6} md={3}><Typography variant="body2" color="error">کل بلاعوض: <strong>{adminReport.total_donation?.toLocaleString()}</strong></Typography></Grid>
                 <Grid item xs={6} md={3}><Typography variant="body2">تعهدات ماهانه: <strong>{adminReport.total_commitments?.toLocaleString()}</strong></Typography></Grid>
-                <Grid item xs={6} md={3}><Typography variant="body2">کل برداشتی‌ها: <strong>{adminReport.total_withdrawal?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={12} md={6}><Typography variant="body2" color="error">کل برداشتی‌ها از ابتدا: <strong>{adminReport.total_withdrawal?.toLocaleString()}</strong></Typography></Grid>
+            </Grid>
+
+            <Divider style={{margin:'20px 0 15px 0', backgroundColor: '#81c784'}} />
+            <Typography variant="subtitle2" style={{marginBottom:'15px', fontWeight: 'bold', color: '#1b5e20'}}>
+                📊 موجودی تفکیک‌شده‌ی حساب‌های فرهنگی و خیریه:
+            </Typography>
+            <Grid container spacing={2} style={{backgroundColor: 'rgba(255,255,255,0.6)', padding: '10px', borderRadius: '8px'}}>
+                <Grid item xs={6} md={4}><Typography variant="body2">صندوق صدقات: <strong style={{color:'#388e3c'}}>{adminReport.total_donation?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={6} md={4}><Typography variant="body2">صندوق قربانی: <strong style={{color:'#388e3c'}}>{adminReport.total_sacrifice?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={6} md={4}><Typography variant="body2">امور کتاب (صدقه): <strong style={{color:'#388e3c'}}>{adminReport.total_book?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={6} md={4}><Typography variant="body2">سهم امام: <strong style={{color:'#388e3c'}}>{adminReport.total_khoms_imam?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={6} md={4}><Typography variant="body2">سهم سادات: <strong style={{color:'#388e3c'}}>{adminReport.total_khoms_sadat?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="body2" style={{color: '#5d4037'}}>وقف عام: <strong>{adminReport.total_waqf_gen?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="body2" style={{color: '#5d4037'}}>وقف خاص کتاب: <strong>{adminReport.total_waqf_book?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="body2" style={{color: '#5d4037'}}>وقف خاص محتوا: <strong>{adminReport.total_waqf_media?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="body2" style={{color: '#5d4037'}}>وقف خاص زیرساخت: <strong>{adminReport.total_waqf_infra?.toLocaleString()}</strong></Typography></Grid>
             </Grid>
         </Paper>
       )}
 
       <Paper elevation={3} style={{ padding: '20px' }}>
-        
-        {/* هدر پروفایل */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '30px', flexWrap:'wrap', gap:'10px' }}>
           <div>
             <Typography variant="h5" style={{fontWeight: 'bold', marginBottom:'5px'}}>
@@ -141,42 +198,23 @@ function Dashboard() {
             
             <div style={{ marginTop: '10px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                 <Chip label={data.status} color={data.is_active ? "success" : "error"} size="small" variant="outlined" />
+                <Chip icon={<GroupAddIcon />} label={`معرفی: ${data.referrals_count || 0}`} color="primary" size="small" variant="outlined" style={{backgroundColor: '#e3f2fd', border: 'none', color: '#1565c0'}} />
+                <Button variant="text" size="small" startIcon={<EditIcon />} onClick={() => navigate('/profile')}>ویرایش</Button>
+                <Button variant="text" size="small" color="warning" startIcon={<KeyIcon />} onClick={() => navigate('/change-password')}>تغییر رمز</Button>
                 
-                <Chip 
-                    icon={<GroupAddIcon />} 
-                    label={`معرفی: ${data.referrals_count || 0}`} 
-                    color="primary" size="small" variant="outlined" 
-                    style={{backgroundColor: '#e3f2fd', border: 'none', color: '#1565c0'}}
-                />
-                
-                <Button variant="text" size="small" startIcon={<EditIcon />} onClick={() => navigate('/profile')}>
-                    ویرایش
-                </Button>
-                <Button variant="text" size="small" color="warning" startIcon={<KeyIcon />} onClick={() => navigate('/change-password')}>
-                    رمز
-                </Button>
-                
-                {!new URLSearchParams(window.location.search).get('user_id') && (
-                    <Button 
-                        variant="outlined" size="small" color="secondary" 
-                        startIcon={<FamilyRestroomIcon />} 
-                        onClick={() => navigate('/family')}
-                    >
-                        خانواده
-                    </Button>
+                {/* دکمه ثبت خانواده فقط زمانی دیده می‌شود که در اکانت اصلی باشیم */}
+                {!targetUserId && (
+                    <Button variant="outlined" size="small" color="secondary" startIcon={<FamilyRestroomIcon />} onClick={() => navigate('/family')}>ثبت نام خانواده</Button>
                 )}
             </div>
           </div>
           
           <div style={{display:'flex', gap:'5px'}}>
-              <Button variant="outlined" size="small" onClick={() => window.location.reload()}>
-                <RefreshIcon />
-              </Button>
+              <Button variant="outlined" size="small" onClick={() => window.location.reload()}><RefreshIcon /></Button>
               <Button variant="outlined" color="error" onClick={handleLogout} size="small">خروج</Button>
           </div>
         </div>
 
-        {/* کارت‌های آمار */}
         <Grid container spacing={2}>
           <Grid item xs={12} md={4}>
             <Card style={{ background: 'linear-gradient(135deg, #1e88e5 0%, #1565c0 100%)', color: 'white' }}>
@@ -202,7 +240,6 @@ function Dashboard() {
             </Card>
           </Grid>
 
-          {/* کارت امتیاز وام (اصلاح شده با جزئیات جدید) */}
           <Grid item xs={12} md={4}>
             <Card style={{ background: 'linear-gradient(135deg, #fb8c00 0%, #ef6c00 100%)', color: 'white', position: 'relative' }}>
               <CardContent>
@@ -218,8 +255,7 @@ function Dashboard() {
                     <div style={{display:'flex', justifyContent:'space-between'}}><span>🎁 بلاعوض:</span><span>{data.loan_points_details.from_donations?.toLocaleString()}</span></div>
                     <div style={{display:'flex', justifyContent:'space-between'}}><span>👥 معرف:</span><span>{data.loan_points_details.from_referrals?.toLocaleString()}</span></div>
                     <div style={{display:'flex', justifyContent:'space-between'}}><span>💰 سپرده:</span><span>{data.loan_points_details.from_savings?.toLocaleString()}</span></div>
-                    {/* اضافه شدن بخش نقل و انتقالات */}
-                    <div style={{display:'flex', justifyContent:'space-between', color:'#fffde7', fontWeight:'bold'}}><span>🔄 انتقالی:</span><span>{data.loan_points_details.from_transfers?.toLocaleString()}</span></div>
+                    <div style={{display:'flex', justifyContent:'space-between', color:'#fffde7', fontWeight:'bold'}}><span>🔄استفاده‌شده:</span><span>{data.loan_points_details.from_transfers?.toLocaleString()}</span></div>
                 </div>
 
                 {data.loan_points_details.has_loan_deposit ? (
@@ -247,57 +283,33 @@ function Dashboard() {
 
         <Divider style={{ margin: '30px 0' }} />
 
-        {/* --- بخش جدید: دکمه‌های دسترسی سریع --- */}
         <Typography variant="h6" gutterBottom style={{fontWeight:'bold', color:'#333'}}>دسترسی سریع</Typography>
         <Grid container spacing={2} style={{ marginBottom: '30px' }}>
-            
-            {/* دکمه واریز */}
+            {/* --- جراحی: اضافه کردن ارسال user_id به آدرس‌های دکمه‌ها --- */}
             <Grid item xs={6} sm={3}>
-                <Button 
-                    variant="contained" fullWidth 
-                    style={{ height: '60px', background: 'linear-gradient(45deg, #2e7d32 30%, #4caf50 90%)', fontSize:'1rem' }}
-                    startIcon={<AddIcon />} 
-                    onClick={() => navigate('/deposit')}
-                >
-                    واریز وجه
-                </Button>
+                <Button variant="contained" fullWidth style={{ height: '60px', background: 'linear-gradient(45deg, #2e7d32 30%, #4caf50 90%)', fontSize:'1rem' }} startIcon={<AddIcon />} onClick={() => navigate(targetUserId ? `/deposit?user_id=${targetUserId}` : '/deposit')}>واریز وجه</Button>
             </Grid>
-
-            {/* دکمه برداشت */}
             <Grid item xs={6} sm={3}>
-                <Button 
-                    variant="contained" fullWidth 
-                    style={{ height: '60px', background: 'linear-gradient(45deg, #c62828 30%, #e53935 90%)', fontSize:'1rem' }}
-                    startIcon={<RemoveIcon />} 
-                    onClick={() => navigate('/withdraw')}
-                >
-                    برداشت وجه
-                </Button>
+                <Button variant="contained" fullWidth style={{ height: '60px', background: 'linear-gradient(45deg, #c62828 30%, #e53935 90%)', fontSize:'1rem' }} startIcon={<RemoveIcon />} onClick={() => navigate(targetUserId ? `/withdraw?user_id=${targetUserId}` : '/withdraw')}>برداشت وجه</Button>
+            </Grid>
+            <Grid item xs={6} sm={3}>
+                <Button variant="contained" fullWidth style={{ height: '60px', background: 'linear-gradient(45deg, #ef6c00 30%, #ff9800 90%)', fontSize:'1rem' }} startIcon={<CreditScoreIcon />} onClick={() => navigate(targetUserId ? `/loans?user_id=${targetUserId}` : '/loans')}>درخواست وام</Button>
+            </Grid>
+            <Grid item xs={6} sm={3}>
+                <Button variant="contained" fullWidth style={{ height: '60px', background: 'linear-gradient(45deg, #6a1b9a 30%, #8e24aa 90%)', fontSize:'1rem' }} startIcon={<SwapHorizIcon />} onClick={() => navigate(targetUserId ? `/points?user_id=${targetUserId}` : '/points')}>انتقال امتیاز</Button>
             </Grid>
             
-            {/* دکمه وام */}
-            <Grid item xs={6} sm={3}>
-                <Button 
-                    variant="contained" fullWidth 
-                    style={{ height: '60px', background: 'linear-gradient(45deg, #ef6c00 30%, #ff9800 90%)', fontSize:'1rem' }}
-                    startIcon={<CreditScoreIcon />} 
-                    onClick={() => navigate('/loans')}
-                >
-                    درخواست وام
-                </Button>
-            </Grid>
-
-            {/* دکمه انتقال امتیاز */}
-            <Grid item xs={6} sm={3}>
-                <Button 
-                    variant="contained" fullWidth 
-                    style={{ height: '60px', background: 'linear-gradient(45deg, #6a1b9a 30%, #8e24aa 90%)', fontSize:'1rem' }}
-                    startIcon={<SwapHorizIcon />} 
-                    onClick={() => navigate('/points')}
-                >
-                    انتقال امتیاز
-                </Button>
-            </Grid>
+            {(data.role === 'ADMIN' || data.role === 'OBSERVER' || data.can_manage_loans) && (
+                <Grid item xs={12}>
+                    <Button variant="contained" fullWidth style={{ height: '60px', background: 'linear-gradient(45deg, #0277bd 30%, #039be5 90%)', fontSize:'1rem', marginTop: '10px' }} startIcon={<AdminPanelSettingsIcon />} onClick={() => navigate('/loan-manager')}>ورود به پنل اختصاصی مدیریت وام‌ها</Button>
+                </Grid>
+            )}
+            
+            {(data.role === 'ADMIN' || data.role === 'OBSERVER' || data.can_manage_investments) && (
+                <Grid item xs={12}>
+                    <Button variant="contained" fullWidth style={{ height: '60px', background: 'linear-gradient(45deg, #00695c 30%, #00897b 90%)', fontSize:'1rem', marginTop: '10px' }} startIcon={<ShowChartIcon />} onClick={() => navigate('/investment-manager')}>ورود به پنل اختصاصی مدیریت سرمایه‌گذاری‌ها</Button>
+                </Grid>
+            )}
         </Grid>
 
         <Typography variant="h6" gutterBottom>تراکنش‌های اخیر</Typography>
@@ -307,8 +319,7 @@ function Dashboard() {
               <TableRow><TableCell>مبلغ</TableCell><TableCell>نوع</TableCell><TableCell>تاریخ</TableCell><TableCell align="center">وضعیت</TableCell></TableRow>
             </TableHead>
             <TableBody>
-              {transactions.slice(0, 10).map((t) => {
-                // تشخیص رنگ و نوع برای تمام انواع برداشت
+              {transactions.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage).map((t) => {
                 const isWithdrawal = t.transaction_type.startsWith('W_') || t.transaction_type === 'WITHDRAWAL';
                 
                 return (
@@ -328,6 +339,28 @@ function Dashboard() {
             </TableBody>
           </Table>
         </TableContainer>
+        
+        {/* ابزار صفحه‌بندی بهینه‌شده برای جلوگیری از تداخل گرافیکی و کلیک */}
+        <Box sx={{ display: 'flex', justifyContent: 'center', width: '100%', direction: 'ltr', backgroundColor: '#f9f9f9', borderBottomLeftRadius: '8px', borderBottomRightRadius: '8px' }}>
+            <TablePagination
+                rowsPerPageOptions={[5, 10, 25, 50, 100]}
+                component="div"
+                count={transactions.length}
+                page={page}
+                onPageChange={handleChangePage}
+                rowsPerPage={rowsPerPage}
+                onRowsPerPageChange={handleChangeRowsPerPage}
+                labelRowsPerPage="تعداد در صفحه:"
+                labelDisplayedRows={({ from, to, count }) => `${from} تا ${to} از ${count}`}
+                sx={{
+                    borderTop: 'none',
+                    '.MuiTablePagination-toolbar': { flexWrap: 'wrap', justifyContent: 'center' },
+                    '.MuiTablePagination-selectLabel': { margin: 0, fontSize: '0.85rem' },
+                    '.MuiTablePagination-displayedRows': { margin: 0, fontSize: '0.85rem' },
+                    '.MuiTablePagination-actions': { marginLeft: '10px' }
+                }}
+            />
+        </Box>
       </Paper>
     </Container>
   );

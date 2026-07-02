@@ -6,8 +6,8 @@ import DatePicker from "react-multi-date-picker";
 import persian from "react-date-object/calendars/persian";
 import persian_fa from "react-date-object/locales/persian_fa";
 
-// آدرس سرور لیارا (دقیق چک کنید)
-const BASE_URL = 'https://sandogh-server.liara.run'; 
+// آدرس اصلاح شد
+const BASE_URL = ''; 
 
 function Profile() {
   const navigate = useNavigate();
@@ -84,7 +84,14 @@ function Profile() {
                 {genderOptions.map((o) => (<MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>))}
               </TextField>
               <div style={{ width: '60%' }}>
-                <DatePicker value={birthDate} onChange={setBirthDate} calendar={persian} locale={persian_fa} style={{ width: "100%", height: "40px", borderRadius: "4px", border: "1px solid #c4c4c4", padding: "0 14px" }} />
+                <DatePicker 
+                  value={birthDate} 
+                  onChange={setBirthDate} 
+                  calendar={persian} 
+                  locale={persian_fa} 
+                  placeholder="📅 تاریخ تولد خود را انتخاب کنید" 
+                  style={{ width: "100%", height: "40px", borderRadius: "4px", border: "1px solid #c4c4c4", padding: "0 14px", fontFamily: "inherit", fontSize: "0.9rem" }} 
+                />
               </div>
           </div>
           <TextField label="شماره کارت" name="card_number" fullWidth margin="normal" value={formData.card_number} onChange={handleChange} dir="ltr" />

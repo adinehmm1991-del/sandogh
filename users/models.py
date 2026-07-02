@@ -38,6 +38,7 @@ class User(AbstractUser):
         MEMBER = 'MEMBER', _('عضو عادی')
         BENEFACTOR = 'BENEFACTOR', _('خیر')
         FUND_ACCOUNT = 'FUND_ACCOUNT', _('حساب صندوق')
+        CULTURAL = 'CULTURAL', _('حساب فرهنگی و خیریه') # <--- این خط اضافه شد
 
     class Gender(models.TextChoices):
         MALE = 'MALE', _('آقا')
@@ -46,7 +47,7 @@ class User(AbstractUser):
     # موبایل دوباره یکتا (Unique) شد
     phone_number = models.CharField(max_length=11, unique=True, verbose_name=_("شماره موبایل"))
     national_code = models.CharField(max_length=20, null=True, blank=True, verbose_name=_("کد ملی"))
-    membership_code = models.CharField(max_length=20, unique=True, editable=False, verbose_name=_("کد عضویت"))
+    membership_code = models.CharField(max_length=20, unique=True, verbose_name=_("کد عضویت"))
     
     full_name = models.CharField(max_length=150, verbose_name=_("نام و نام خانوادگی"))
     gender = models.CharField(max_length=10, choices=Gender.choices, null=True, blank=True, verbose_name=_("جنسیت"))
@@ -54,6 +55,9 @@ class User(AbstractUser):
     social_id = models.CharField(max_length=100, null=True, blank=True, verbose_name=_("آیدی پیام‌رسان"))
     
     role = models.CharField(max_length=20, choices=Roles.choices, default=Roles.MEMBER, verbose_name=_("نقش"))
+    can_manage_loans = models.BooleanField(default=False, verbose_name=_("دسترسی مدیریت وام (هیئت مدیره)"))
+    can_manage_investments = models.BooleanField(default=False, verbose_name="دسترسی مدیریت سرمایه‌گذاری")
+    card_number = models.CharField(max_length=16, null=True, blank=True, verbose_name=_("شماره کارت"))
     
     card_number = models.CharField(max_length=16, null=True, blank=True, verbose_name=_("شماره کارت"))
     shaba_number = models.CharField(max_length=26, null=True, blank=True, verbose_name=_("شماره شبا"))
@@ -62,6 +66,10 @@ class User(AbstractUser):
     monthly_commitment = models.BigIntegerField(null=True, blank=True, verbose_name=_("تعهد واریز ماهیانه (ریال)"))
     # فیلد جدید: سرپرست (برای اعضای خانواده)
     parent = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='family_members', verbose_name="سرپرست")
+    # 🆕 فیلدهای تأیید مدیر (اضافه شود)
+    
+    
+
 
     # نام کاربری دوباره شد موبایل
     USERNAME_FIELD = 'phone_number'
@@ -70,30 +78,53 @@ class User(AbstractUser):
     objects = CustomUserManager()
     
     def save(self, *args, **kwargs):
-        if not self.membership_code:
-            # 1. پیدا کردن تمام کدهای موجود که با 313 شروع می‌شوند
-            existing_codes = User.objects.filter(membership_code__startswith='313').values_list('membership_code', flat=True)
+        # ۱. ابتدا بررسی می‌کنیم که آیا این یک ثبت‌نام جدید است یا خیر (قبل از ذخیره)
+        is_new = self.pk is None
+        
+        # ۲. اگر کاربر جدید بود، کد عضویت ۳۱۳... برایش تولید می‌کنیم
+        if is_new and not self.membership_code:
+            # --- جراحی نهایی: پیدا کردن بزرگترین کد به صورت کاملاً ریاضی ---
+            users_with_313 = User.objects.filter(membership_code__startswith='313')
+            max_code = 313000
             
-            # 2. استخراج بخش عددی کدها (مثلاً از 31301 عدد 1 را می‌گیرد)
-            taken_numbers = set()
-            for code in existing_codes:
+            for u in users_with_313:
                 try:
-                    # فرض بر این است که کدها 313 + عدد هستند
-                    number_part = int(code[3:]) 
-                    taken_numbers.add(number_part)
+                    code_int = int(u.membership_code)
+                    if code_int > max_code:
+                        max_code = code_int
                 except ValueError:
-                    continue
+                    pass
+            
+            new_code = max_code + 1
+            
+            # تله‌ی ضدتداخل: اگر به هر دلیلی این کد پر بود، آنقدر برو جلو تا یک جای خالی پیدا کنی!
+            while User.objects.filter(membership_code=str(new_code)).exists():
+                new_code += 1
+                
+            self.membership_code = str(new_code)
 
-            # 3. پیدا کردن اولین عدد خالی (از 1 به بالا چک می‌کنیم)
-            counter = 1
-            while True:
-                if counter not in taken_numbers:
-                    # این عدد خالی است! انتخابش کن.
-                    self.membership_code = f"313{counter}"
-                    break
-                counter += 1
-
+        # ۳. کاربر را در دیتابیس ذخیره می‌کنیم (این خط فقط باید یک بار نوشته شود!)
         super().save(*args, **kwargs)
+
+        # ۴. ارسال پیامک به مدیر کل (فقط در صورتی که کاربر جدید باشد)
+        if is_new:
+            try:
+                from users.utils import send_pattern_sms
+                # چون کلاس NotificationSettings در همین فایل است، مستقیم از آن استفاده می‌کنیم
+                settings_obj = NotificationSettings.objects.first()
+                if settings_obj and settings_obj.general_phones:
+                    phones = [p.strip() for p in settings_obj.general_phones.split(',') if p.strip()]
+                    name_to_send = self.full_name if self.full_name else self.phone_number
+                    
+                    for phone in phones:
+                        send_pattern_sms(
+                            phone, 
+                            'admin_alert', 
+                            {'token1': 'ثبت‌نام کاربر جدید', 'token2': name_to_send, 'token3': '-'}
+                        )
+            except Exception:
+                pass
+        
     class Meta:
         verbose_name = _("کاربر")
         verbose_name_plural = _("کاربران")
@@ -117,3 +148,16 @@ class OTP(models.Model):
         now = timezone.now()
         diff = now - self.created_at
         return diff.total_seconds() < 120
+    
+# --- اضافه شدن جدول تنظیمات پیامک مدیران (فاز ۴) ---
+class NotificationSettings(models.Model):
+    financial_phones = models.CharField(max_length=255, null=True, blank=True, verbose_name="شماره‌های مسئول مالی", help_text="شماره‌ها را با ویرگول انگلیسی (,) جدا کنید. (دریافت پیامک واریز و برداشت)")
+    loan_phones = models.CharField(max_length=255, null=True, blank=True, verbose_name="شماره‌های مسئول وام", help_text="شماره‌ها را با ویرگول (,) جدا کنید. (دریافت پیامک درخواست وام)")
+    general_phones = models.CharField(max_length=255, null=True, blank=True, verbose_name="شماره‌های مدیر کل", help_text="شماره‌ها را با ویرگول (,) جدا کنید. (دریافت پیامک‌های عمومی مثل انتقال امتیاز)")
+
+    class Meta:
+        verbose_name = "تنظیمات پیامک مدیران"
+        verbose_name_plural = "تنظیمات پیامک مدیران"
+
+    def __str__(self):
+        return "تنظیمات شماره‌های دریافت‌کننده پیامک"

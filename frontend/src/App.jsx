@@ -7,6 +7,8 @@ import rtlPlugin from 'stylis-plugin-rtl';
 import { CacheProvider } from '@emotion/react';
 import createCache from '@emotion/cache';
 import { prefixer } from 'stylis';
+import LoanManagerDashboard from './LoanManagerDashboard.jsx';
+import InvestmentDashboard from './InvestmentDashboard'; // مسیر فایل خودتان را تنظیم کنید
 
 // --- وارد کردن تمام صفحات و ابزارها ---
 import { toEnglishDigits } from './utils';
@@ -56,16 +58,28 @@ function LoginPage() {
   const handleLogin = async () => {
     setMessage('درحال بررسی...');
     try {
-      const response = await axios.post('https://sandogh-server.liara.run/api/users/login/', {
+      // تغییر مهم: آدرس لیارا حذف شد
+      const response = await axios.post('/api/users/login/', {
         phone_number: phone,
         password: password
       });
+      
       localStorage.setItem('token', response.data.token);
       setMessage('✅ ورود موفقیت‌آمیز بود!');
-      setTimeout(() => navigate('/dashboard'), 1000);
+      setTimeout(() => navigate('/dashboard'), 50);
+      
     } catch (error) {
-      console.error(error);
-      setMessage('❌ خطا: شماره موبایل یا رمز عبور اشتباه است.');
+      console.log("Login Error:", error.response ? error.response.data : error.message);
+      
+      let serverError = 'خطا در ارتباط با سرور';
+      if (error.response && error.response.data) {
+          if (error.response.data.error) {
+              serverError = error.response.data.error; 
+          } else {
+              serverError = Object.values(error.response.data).join(' - '); 
+          }
+      }
+      setMessage(`❌ ${serverError}`);
     }
   };
 
@@ -97,7 +111,7 @@ function LoginPage() {
           </Button>
         </Box>
         
-        {message && <Typography variant="body1" style={{ marginTop: '20px', color: message.includes('خطا') ? 'red' : 'green' }}>{message}</Typography>}
+        {message && <Typography variant="body1" style={{ marginTop: '20px', color: message.includes('خطا') || message.includes('❌') ? 'red' : 'green' }}>{message}</Typography>}
         
         <div style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '14px' }}>
             <Link to="/forgot-password" style={{textDecoration: 'none', color: '#1976d2'}}>رمز عبور را فراموش کرده‌اید؟</Link>
@@ -126,7 +140,8 @@ function App() {
           <Route path="/family" element={<Family />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/change-password" element={<ChangePassword />} />
-          
+          <Route path="/loan-manager" element={<LoanManagerDashboard />} />
+          <Route path="/investment-manager" element={<InvestmentDashboard />} />
           {/* مسیرهای جدید برای وام و انتقال امتیاز */}
           <Route path="/loans" element={<LoanRequest />} />
           <Route path="/points" element={<PointTransfer />} />

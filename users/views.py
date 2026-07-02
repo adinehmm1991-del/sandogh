@@ -13,28 +13,38 @@ import string
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = UserRegistrationSerializer
+    
     permission_classes = [permissions.AllowAny]
+    authentication_classes = [] # <--- این خط برای دور زدن خطای 403 اضافه شد
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
-            send_pattern_sms(user.phone_number, 'welcome', {
-                'token1': user.full_name,
-                'token2': user.membership_code
-            })
+            
+            # <--- این بخش داخل try گذاشته شد تا سایت خطای 500 ندهد --->
+            try:
+                send_pattern_sms(user.phone_number, 'welcome', {
+                    'token1': user.full_name,
+                    'token2': user.membership_code
+                })
+            except Exception as e:
+                print(f"SMS Error on Registration: {e}")
+
             return Response({
                 "message": "ثبت‌نام با موفقیت انجام شد.",
                 "user_id": user.id,
                 "phone": user.phone_number,
                 "code": user.membership_code
             }, status=status.HTTP_201_CREATED)
+            
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 # 2. ورود (حیاتی‌ترین بخش)
 class LoginView(generics.GenericAPIView):
     serializer_class = UserLoginSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = [] 
 
     def post(self, request):
         serializer = self.get_serializer(data=request.data)
@@ -42,22 +52,24 @@ class LoginView(generics.GenericAPIView):
             phone = serializer.validated_data['phone_number']
             password = serializer.validated_data['password']
             
-            # احراز هویت (موبایل به عنوان نام کاربری)
-            user = authenticate(username=phone, password=password)
+            # --- روش مستقیم و مطمئن برای پیدا کردن کاربر ---
+            user = User.objects.filter(phone_number=phone).first()
             
-            if user:
+            # چک کردن اینکه آیا کاربر وجود دارد و رمزش درست است
+            if user and user.check_password(password):
                 token, created = Token.objects.get_or_create(user=user)
                 return Response({
                     "message": "ورود موفقیت‌آمیز بود.",
                     "token": token.key,
                     "user_id": user.id,
                     "full_name": user.full_name,
-                    "role": user.role
+                    "role": getattr(user, 'role', 'USER')
                 }, status=status.HTTP_200_OK)
             else:
                 return Response({"error": "شماره موبایل یا رمز عبور اشتباه است."}, status=status.HTTP_400_BAD_REQUEST)
+                
+        # اگر فرمت شماره یا رمز کلاً غلط باشد، این ارور برمی‌گردد
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 # 3. مدیریت خانواده (افزودن و لیست)
 class FamilyMemberView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -105,11 +117,14 @@ class FamilyMemberView(APIView):
                 birth_date=serializer.validated_data.get('birth_date')
             )
 
-            # ارسال پیامک خوش‌آمد (به شماره پدر)
-            send_pattern_sms(request.user.phone_number, 'welcome', {
-                'token1': new_user.full_name,
-                'token2': new_user.membership_code
-            })
+            # --- جراحی: مهار کردن خطای 500 در صورت قطعی پنل پیامکی ---
+            try:
+                send_pattern_sms(request.user.phone_number, 'welcome', {
+                    'token1': new_user.full_name,
+                    'token2': new_user.membership_code
+                })
+            except Exception as e:
+                print(f"SMS Error on Family Member: {e}")
 
             return Response({"message": "عضو جدید با موفقیت اضافه شد.", "code": new_user.membership_code}, status=200)
         return Response(serializer.errors, status=400)
@@ -123,6 +138,7 @@ class ProfileUpdateView(generics.RetrieveUpdateAPIView):
 class ForgotPasswordView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = ForgotPasswordRequestSerializer
+    authentication_classes = []
     def post(self, request):
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():

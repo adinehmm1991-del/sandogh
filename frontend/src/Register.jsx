@@ -79,7 +79,8 @@ function Register() {
     }
 
     try {
-      const response = await axios.post('https://sandogh-server.liara.run/api/users/register/', formData);
+      // تغییر مهم: آدرس لیارا حذف شد
+      const response = await axios.post('/api/users/register/', formData);
       const newCode = response.data.code;
       setMessage({ type: 'success', text: `✅ ثبت‌نام موفقیت‌آمیز بود! کد عضویت شما: ${newCode}` });
       setTimeout(() => navigate('/'), 3000);

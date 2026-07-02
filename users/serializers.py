@@ -2,8 +2,9 @@ from rest_framework import serializers
 from .models import User
 
 def clean_numbers(value):
-    if value:
-        value = value.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+    # تغییر حیاتی: بررسی None بودن و تبدیل به استرینگ قبل از هرگونه عملیات
+    if value is not None:
+        value = str(value).replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
         persian_digits = '۰۱۲۳۴۵۶۷۸۹'
         arabic_digits = '٠١٢٣٤٥٦٧٨٩'
         english_digits = '0123456789'
@@ -24,7 +25,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     def validate_referral_code(self, value): return clean_numbers(value)
     
     def validate_monthly_commitment(self, value):
-        clean_val = clean_numbers(str(value))
+        clean_val = clean_numbers(value)
         return clean_val if clean_val else None
 
     def create(self, validated_data):
@@ -52,14 +53,15 @@ class UserProfileSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'full_name', 'national_code', 'gender', 'birth_date', 
-            'card_number', 'shaba_number', 'monthly_commitment'
+            'card_number', 'shaba_number', 'monthly_commitment',
+            'can_manage_loans'
         ]
 
     def validate_national_code(self, value): return clean_numbers(value)
     def validate_card_number(self, value): return clean_numbers(value)
     def validate_shaba_number(self, value): return clean_numbers(value)
     def validate_monthly_commitment(self, value):
-        clean_val = clean_numbers(str(value))
+        clean_val = clean_numbers(value)
         return clean_val if clean_val else None
 
 # 4. فرم درخواست فراموشی رمز
@@ -83,8 +85,7 @@ class ChangePasswordSerializer(serializers.Serializer):
     def validate_old_password(self, value): return clean_numbers(value)
     def validate_new_password(self, value): return clean_numbers(value)
 
-# سریالایزر افزودن عضو خانواده
-# 3. افزودن عضو خانواده (اصلاح شده)
+# 7. افزودن عضو خانواده 
 class AddFamilyMemberSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -94,8 +95,7 @@ class AddFamilyMemberSerializer(serializers.ModelSerializer):
         # فقط تمیز کردن اعداد (حذف فاصله و تبدیل فارسی به انگلیسی)
         value = clean_numbers(value)
         
-        # چک کردن تکراری بودن در کل سیستم (اختیاری: اگر می‌خواهید هر کد ملی فقط برای یک نفر باشد)
-        # اگر می‌خواهید تکراری مجاز باشد، این ۳ خط پایین را حذف کنید:
+        # چک کردن تکراری بودن در کل سیستم
         if User.objects.filter(national_code=value).exists():
             raise serializers.ValidationError("این کد ملی قبلاً در سیستم ثبت شده است.")
             

@@ -5,10 +5,19 @@ from .views import (
     UserDashboardView, 
     GeneralReportView,
     WithdrawalRequestListCreateView,
-    # --- کلاس‌های جدید اضافه شدند ---
+    AdminLoanSavingsReportView,
     LoanRequestListCreateView,
+    LoanDashboardReportView,
     PointTransferView,
-    PointLogListView
+    PointLogListView,
+    AdminLoanManagementView,
+    AdminLoanDetailView,
+    InvestmentDashboardView,
+    ExternalInvestmentListCreateView,
+    ExternalInvestmentDetailView,
+    InvestmentTransactionCreateView,
+    SettleInvestmentProfitsView,
+    AdminLoanInstallmentsView  # <--- ۱. این کلاس اضافه شد
 )
 
 urlpatterns = [
@@ -35,4 +44,18 @@ urlpatterns = [
     
     # 3. سوابق امتیاز (تاریخچه)
     path('points/logs/', PointLogListView.as_view(), name='point-logs'),
+
+    path('reports/loan-dashboard/', LoanDashboardReportView.as_view(), name='loan-dashboard-report'),
+    path('manager/loans/', AdminLoanManagementView.as_view(), name='admin-loan-list'),
+    path('manager/loans/<int:pk>/', AdminLoanDetailView.as_view(), name='admin-loan-detail'),
+    
+    # ---> ۲. جراحی اصلی: این آدرس برای اقساط اضافه شد تا ارور 404 برطرف شود <---
+    path('manager/loans/<int:loan_id>/installments/', AdminLoanInstallmentsView.as_view(), name='admin-loan-installments'),
+    
+    path('manager/loan-savings/', AdminLoanSavingsReportView.as_view(), name='admin-loan-savings'),
+    path('manager/investment-dashboard/', InvestmentDashboardView.as_view(), name='investment-dashboard'),
+    path('manager/investments/', ExternalInvestmentListCreateView.as_view(), name='investment-list-create'),
+    path('manager/investments/<int:pk>/', ExternalInvestmentDetailView.as_view(), name='investment-detail'),
+    path('manager/investment-transactions/', InvestmentTransactionCreateView.as_view(), name='investment-transaction-create'),
+    path('manager/investment-profits/settle/', SettleInvestmentProfitsView.as_view(), name='investment-profits-settle'),
 ]

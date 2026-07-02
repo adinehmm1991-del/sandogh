@@ -12,16 +12,20 @@ function LoanRequest() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState(null);
 
-  const BASE_URL = 'https://sandogh-server.liara.run';
+  // --- خواندن id زیرمجموعه از آدرس ---
+  const queryParams = new URLSearchParams(window.location.search);
+  const targetUserId = queryParams.get('user_id');
 
   useEffect(() => {
     fetchLoans();
-  }, []);
+  }, [targetUserId]);
 
   const fetchLoans = async () => {
     const token = localStorage.getItem('token');
     try {
-      const res = await axios.get(`${BASE_URL}/api/accounting/loans/`, {
+      let url = '/api/accounting/loans/';
+      if (targetUserId) url += `?user_id=${targetUserId}`;
+      const res = await axios.get(url, {
          headers: { Authorization: `Token ${token}` }
       });
       setRequests(res.data);
@@ -32,18 +36,20 @@ function LoanRequest() {
     setLoading(true); setMsg(null);
     const token = localStorage.getItem('token');
     try {
-      await axios.post(`${BASE_URL}/api/accounting/loans/`, { amount, description: desc }, {
+      const payload = { amount, description: desc };
+      if (targetUserId) payload.target_user_id = targetUserId; // ارسال آیدی به سرور
+
+      await axios.post('/api/accounting/loans/', payload, {
         headers: { Authorization: `Token ${token}` }
       });
-      setMsg({ type: 'success', text: 'درخواست وام ثبت شد.' });
+      setMsg({ type: 'success', text: 'درخواست وام با موفقیت ثبت شد.' });
       setAmount(''); setDesc(''); fetchLoans();
-   // در فایل LoanRequest.jsx داخل handleSubmit
 
     } catch (err) {
       let errorText = 'خطا در ثبت درخواست.';
       if (err.response && err.response.data) {
           const data = err.response.data;
-          if (data.amount) errorText = data.amount[0]; // خطای سقف وام یا امتیاز ناکافی
+          if (data.amount) errorText = data.amount[0];
           else if (data.detail) errorText = data.detail;
       }
       setMsg({ type: 'error', text: errorText });
@@ -53,8 +59,8 @@ function LoanRequest() {
   return (
     <Container maxWidth="md" style={{ marginTop: '30px', marginBottom: '50px' }}>
         <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px'}}>
-            <Typography variant="h5" style={{fontWeight:'bold', color:'#ef6c00'}}>درخواست وام جدید</Typography>
-            <Button variant="outlined" onClick={() => navigate('/dashboard')}>بازگشت به داشبورد</Button>
+            <Typography variant="h5" style={{fontWeight:'bold', color:'#ef6c00'}}>درخواست وام {targetUserId ? '(زیرمجموعه)' : ''}</Typography>
+            <Button variant="outlined" onClick={() => navigate(targetUserId ? `/dashboard?user_id=${targetUserId}` : '/dashboard')}>بازگشت به داشبورد</Button>
         </div>
 
         <Paper elevation={3} style={{ padding: '20px', marginBottom: '30px', background: '#fff3e0' }}>
@@ -86,8 +92,8 @@ function LoanRequest() {
                     ) : (
                         requests.map((r) => (
                             <TableRow key={r.id}>
-                                <TableCell>{Number(r.amount).toLocaleString()}</TableCell>
-                                <TableCell dir="ltr">{new Date(r.created_at).toLocaleDateString('fa-IR')}</TableCell>
+                                <TableCell style={{fontWeight: 'bold'}}>{Number(r.amount).toLocaleString()}</TableCell>
+                                <TableCell dir="ltr" style={{color: '#666'}}>{new Date(r.created_at).toLocaleDateString('fa-IR')}</TableCell>
                                 <TableCell>
                                     <Chip 
                                         label={r.status === 'APPROVED' ? 'تایید شده' : r.status === 'REJECTED' ? 'رد شده' : 'در انتظار'} 

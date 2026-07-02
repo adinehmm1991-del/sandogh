@@ -1,102 +1,145 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Container, Paper, Typography, TextField, Button, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Chip, Alert, Divider } from '@mui/material';
+import { Container, Paper, Typography, TextField, Button, Box, Alert, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
-import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
+import CurrencyInput from './CurrencyInput'; 
+import { toEnglishDigits } from './utils';
 
 function PointTransfer() {
   const navigate = useNavigate();
-  const [logs, setLogs] = useState([]);
-  const [targetCode, setTargetCode] = useState('');
-  const [points, setPoints] = useState('');
   const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState(null);
+  const [message, setMessage] = useState(null);
+  const [history, setHistory] = useState([]);
+  
+  const queryParams = new URLSearchParams(window.location.search);
+  const targetUserId = queryParams.get('user_id');
 
-  const BASE_URL = 'https://sandogh-server.liara.run';
+  const [formData, setFormData] = useState({
+    target_membership_code: '',
+    points: ''
+  });
 
-  useEffect(() => { fetchLogs(); }, []);
-
-  const fetchLogs = async () => {
+  const fetchHistory = async () => {
     const token = localStorage.getItem('token');
+    if (!token) return;
     try {
-        const res = await axios.get(`${BASE_URL}/api/accounting/points/logs/`, { headers: { Authorization: `Token ${token}` } });
-        setLogs(res.data);
-    } catch (err) { console.error(err); }
+      let url = '/api/accounting/points/transfer/';
+      if (targetUserId) url += `?user_id=${targetUserId}`;
+      const res = await axios.get(url, { headers: { Authorization: `Token ${token}` } });
+      setHistory(res.data);
+    } catch (err) {
+      console.error('خطا در دریافت تاریخچه:', err);
+    }
   };
 
-  const handleTransfer = async () => {
-    setLoading(true); setMsg(null);
-    const token = localStorage.getItem('token');
-    try {
-      await axios.post(`${BASE_URL}/api/accounting/points/transfer/`, 
-        { target_membership_code: targetCode, points: points }, 
-        { headers: { Authorization: `Token ${token}` } }
-      );
-      setMsg({ type: 'success', text: '✅ انتقال امتیاز با موفقیت انجام شد.' });
-      setTargetCode(''); setPoints(''); fetchLogs();
-    // در فایل PointTransfer.jsx داخل handleTransfer
+  useEffect(() => {
+    fetchHistory();
+  }, [targetUserId]);
 
-    } catch (err) {
-      let errorText = 'خطا در انتقال.';
-      if (err.response && err.response.data) {
-          const data = err.response.data;
-          if (data.error) errorText = data.error; // خطای موجودی کافی نیست
-          else if (data.target_membership_code) errorText = data.target_membership_code[0];
-          else if (data.points) errorText = data.points[0];
+  const handleChange = (e) => {
+    setFormData({ ...formData, [e.target.name]: e.target.value });
+  };
+
+  const handleSubmit = async () => {
+    setLoading(true);
+    setMessage(null);
+    const token = localStorage.getItem('token');
+    if (!token) { navigate('/'); return; }
+
+    try {
+      const payload = {
+          target_membership_code: toEnglishDigits(formData.target_membership_code),
+          points: formData.points.replace(/,/g, '') 
+      };
+      if (targetUserId) payload.target_user_id = targetUserId; 
+
+      await axios.post('/api/accounting/points/transfer/', payload, {
+        headers: { Authorization: `Token ${token}` }
+      });
+      
+      setMessage({ type: 'success', text: '✅ درخواست انتقال امتیاز با موفقیت ثبت شد.' });
+      setFormData({ target_membership_code: '', points: '' });
+      fetchHistory(); // بروزرسانی جدول پس از ثبت موفق
+   } catch (error) {
+      let errorText = 'خطا در ثبت درخواست.';
+      if (error.response?.data?.error) {
+          errorText = error.response.data.error;
+      } else if (error.response?.data) {
+          errorText = Object.values(error.response.data)[0];
       }
-      setMsg({ type: 'error', text: errorText });
-    } finally { setLoading(false); }
+      setMessage({ type: 'error', text: errorText });
+    } finally {
+        setLoading(false);
+    }
   };
 
   return (
-    <Container maxWidth="md" style={{ marginTop: '30px' }}>
-      <Paper elevation={3} style={{ padding: '25px', borderRadius: '15px' }}>
-        <div style={{textAlign:'center', marginBottom:'20px'}}>
-            <SwapHorizIcon style={{fontSize: 50, color: '#673ab7'}} />
-            <Typography variant="h5" style={{fontWeight:'bold', color: '#673ab7'}}>انتقال امتیاز وام</Typography>
-            <Typography variant="caption" color="textSecondary">امتیاز خود را به سایر اعضا هدیه دهید</Typography>
-        </div>
-        
-        <div style={{ maxWidth: '400px', margin: '0 auto' }}>
-            <TextField label="کد عضویت گیرنده" value={targetCode} onChange={(e) => setTargetCode(e.target.value)} fullWidth margin="normal" />
-            <TextField label="میزان امتیاز" type="number" value={points} onChange={(e) => setPoints(e.target.value)} fullWidth margin="normal" />
-            
-            <Button variant="contained" style={{backgroundColor:'#673ab7', color:'white'}} fullWidth size="large" onClick={handleTransfer} disabled={loading}>
-                {loading ? 'در حال انتقال...' : 'انتقال امتیاز'}
+    <Container maxWidth="md" style={{ marginTop: '40px', marginBottom: '40px' }}>
+      <Paper elevation={4} style={{ padding: '30px', borderRadius: '15px', marginBottom: '30px' }}>
+        <Typography variant="h5" align="center" style={{ fontWeight: 'bold', color: '#6a1b9a', marginBottom: '20px' }}>
+           انتقال امتیاز وام {targetUserId ? '(زیرمجموعه)' : ''}
+        </Typography>
+
+        <Alert severity="info" style={{marginBottom:'20px'}}>
+            انتقال امتیاز پس از بررسی و تایید مدیر اعمال خواهد شد.
+        </Alert>
+
+        <Box component="form">
+          <TextField 
+            label="کد عضویت مقصد" 
+            name="target_membership_code" 
+            value={formData.target_membership_code} 
+            onChange={handleChange} 
+            fullWidth margin="normal" dir="ltr"
+          />
+          
+          <CurrencyInput 
+            label="مقدار امتیاز (تومان)" 
+            name="points" 
+            value={formData.points} 
+            onChange={handleChange} 
+            fullWidth margin="normal" 
+          />
+
+          <div style={{ display: 'flex', gap: '15px', marginTop:'30px' }}>
+            <Button variant="contained" color="secondary" fullWidth size="large" onClick={handleSubmit} disabled={loading}>
+                {loading ? 'درحال ثبت...' : 'ثبت درخواست'}
             </Button>
-            {msg && <Alert severity={msg.type} style={{marginTop:'15px'}}>{msg.text}</Alert>}
-        </div>
-
-        <Divider style={{margin:'40px 0'}} />
-
-        <Typography variant="h6" gutterBottom>تاریخچه تراکنش‌های امتیاز</Typography>
-        <TableContainer>
-            <Table size="small">
-                <TableHead>
-                    <TableRow><TableCell>نوع</TableCell><TableCell>امتیاز</TableCell><TableCell>توضیحات</TableCell><TableCell>تاریخ</TableCell></TableRow>
-                </TableHead>
-                <TableBody>
-                    {logs.map((log) => (
-                        <TableRow key={log.id}>
-                            <TableCell>
-                                <Chip 
-                                    label={log.log_type === 'SENT' ? 'ارسال' : log.log_type === 'RECEIVED' ? 'دریافت' : 'مصرف وام'} 
-                                    color={log.log_type === 'RECEIVED' ? 'success' : 'default'} 
-                                    size="small" variant="outlined"
-                                />
-                            </TableCell>
-                            <TableCell style={{fontWeight:'bold', color: log.points > 0 ? 'green' : 'red', direction:'ltr'}}>
-                                {log.points > 0 ? `+${log.points.toLocaleString()}` : log.points.toLocaleString()}
-                            </TableCell>
-                            <TableCell style={{fontSize:'0.9em'}}>{log.description}</TableCell>
-                            <TableCell dir="ltr" style={{fontSize:'0.8em', color:'#888'}}>{new Date(log.created_at).toLocaleDateString('fa-IR')}</TableCell>
-                        </TableRow>
-                    ))}
-                </TableBody>
-            </Table>
-        </TableContainer>
-        <Button onClick={() => navigate('/dashboard')} fullWidth style={{marginTop:'20px'}}>بازگشت به داشبورد</Button>
+            <Button variant="outlined" color="inherit" fullWidth onClick={() => navigate(targetUserId ? `/dashboard?user_id=${targetUserId}` : '/dashboard')}>
+                بازگشت
+            </Button>
+          </div>
+        </Box>
+        {message && <Alert severity={message.type} style={{ marginTop: '20px' }}>{message.text}</Alert>}
       </Paper>
+
+      {history.length > 0 && (
+        <Paper elevation={3} style={{ padding: '20px', borderRadius: '15px' }}>
+          <Typography variant="h6" style={{ marginBottom: '15px', color: '#333' }}>تاریخچه درخواست‌های انتقال</Typography>
+          <TableContainer>
+            <Table size="small">
+              <TableHead>
+                <TableRow style={{ backgroundColor: '#f5f5f5' }}>
+                  <TableCell><strong>گیرنده</strong></TableCell>
+                  <TableCell><strong>مقدار امتیاز</strong></TableCell>
+                  <TableCell><strong>وضعیت</strong></TableCell>
+                  <TableCell><strong>تاریخ</strong></TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {history.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell>{row.receiver_name} ({row.receiver_code})</TableCell>
+                    <TableCell>{row.amount.toLocaleString()} تومان</TableCell>
+                    <TableCell>{row.status}</TableCell>
+                    <TableCell>{row.date}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Paper>
+      )}
     </Container>
   );
 }

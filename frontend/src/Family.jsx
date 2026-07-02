@@ -12,13 +12,15 @@ function Family() {
   const [formData, setFormData] = useState({ full_name: '', national_code: '' });
   const [loading, setLoading] = useState(false);
 
-  // دریافت لیست اعضا
+  // دریافت لیست اعضا (آدرس اصلاح شد)
   const fetchMembers = async () => {
     const token = localStorage.getItem('token');
-    const res = await axios.get('https://sandogh-server.liara.run/api/users/family/', {
-       headers: { Authorization: `Token ${token}` }
-    });
-    setMembers(res.data);
+    try {
+        const res = await axios.get('/api/users/family/', {
+           headers: { Authorization: `Token ${token}` }
+        });
+        setMembers(res.data);
+    } catch (e) { console.error(e); }
   };
 
   useEffect(() => { fetchMembers(); }, []);
@@ -27,7 +29,8 @@ function Family() {
     setLoading(true);
     const token = localStorage.getItem('token');
     try {
-        await axios.post('https://sandogh-server.liara.run/api/users/family/', formData, {
+        // افزودن عضو جدید (آدرس اصلاح شد)
+        await axios.post('/api/users/family/', formData, {
             headers: { Authorization: `Token ${token}` }
         });
         alert("✅ عضو جدید اضافه شد!");
