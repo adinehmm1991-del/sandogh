@@ -4,6 +4,16 @@ from django.utils import timezone
 from django.db.models import Sum
 import datetime
 import jdatetime
+def add_jalali_months(base_date, months_to_add):
+    import jdatetime
+    j_date = jdatetime.date.fromgregorian(date=base_date)
+    y = j_date.year + (j_date.month + months_to_add - 1) // 12
+    m = (j_date.month + months_to_add - 1) % 12 + 1
+    d = j_date.day
+    if m > 6 and d == 31: d = 30
+    if m == 12 and d >= 29:
+        d = 30 if jdatetime.date(y, 1, 1).isleap() else 29
+    return jdatetime.date(y, m, d).togregorian()
 
 # --- تابع مسیریاب هوشمند پیامک ---
 def get_admin_phones(role='general'):
@@ -245,7 +255,7 @@ class LoanRequest(models.Model):
             if not LoanInstallment.objects.filter(loan=self).exists():
                 installment_amount = self.amount // self.duration_months
                 for i in range(1, self.duration_months + 1):
-                    due = self.granted_date + datetime.timedelta(days=30 * i)
+                    due = add_jalali_months(self.granted_date, i)
                     LoanInstallment.objects.create(
                         loan=self, installment_number=i, due_date=due, amount=installment_amount
                     )
@@ -317,10 +327,7 @@ class PointTransferRequest(models.Model):
         super().save(*args, **kwargs)
         try:
             # ارسال به مدیر کل
-            if is_new: 
-                phones = get_admin_phones('general')
-                for phone in phones:
-                    send_pattern_sms(phone, 'transfer_request_admin', {'token1': self.sender.full_name, 'token2': self.receiver.full_name})
+           if is_new and self.status == self.Status.PENDING:
                     
             if old_status != self.Status.APPROVED and self.status == self.Status.APPROVED:
                 PointLog.objects.create(user=self.sender, points=-self.amount, log_type=PointLog.Types.TRANSFER_SENT, related_user=self.receiver, description=f"انتقال تایید شده به {self.receiver.full_name}")

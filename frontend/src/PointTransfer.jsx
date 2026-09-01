@@ -57,7 +57,7 @@ function PointTransfer() {
         headers: { Authorization: `Token ${token}` }
       });
       
-      setMessage({ type: 'success', text: '✅ درخواست انتقال امتیاز با موفقیت ثبت شد.' });
+      setMessage({ type: 'success', text: '✅ انتقال امتیاز با موفقیت انجام شد.' });
       setFormData({ target_membership_code: '', points: '' });
       fetchHistory(); // بروزرسانی جدول پس از ثبت موفق
    } catch (error) {
@@ -79,10 +79,6 @@ function PointTransfer() {
         <Typography variant="h5" align="center" style={{ fontWeight: 'bold', color: '#6a1b9a', marginBottom: '20px' }}>
            انتقال امتیاز وام {targetUserId ? '(زیرمجموعه)' : ''}
         </Typography>
-
-        <Alert severity="info" style={{marginBottom:'20px'}}>
-            انتقال امتیاز پس از بررسی و تایید مدیر اعمال خواهد شد.
-        </Alert>
 
         <Box component="form">
           <TextField 

@@ -214,8 +214,7 @@ class LoanRequestSerializer(serializers.ModelSerializer):
         self.context['resolved_user'] = user_to_check
         user = user_to_check
         
-        if amount > 50000000:
-            raise serializers.ValidationError({"amount": "سقف درخواست وام ۵۰ میلیون تومان است."})
+       
 
         today = datetime.date.today()
         

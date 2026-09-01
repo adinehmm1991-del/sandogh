@@ -2,6 +2,7 @@ from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.db.models import Sum
+from .models import add_jalali_months
 import datetime
 from decimal import Decimal
 from datetime import date
@@ -599,15 +600,17 @@ class PointTransferView(APIView):
             if current_total_points < points:
                 return Response({"error": f"امتیاز آزاد شما کافی نیست. موجودی قابل انتقال: {current_total_points:,}"}, status=400)
 
+            # وضعیت را به APPROVED تغییر دهید
             PointTransferRequest.objects.create(
                 sender=user,
                 receiver=target_user,
                 amount=points,
-                status=PointTransferRequest.Status.PENDING,
-                description=f"درخواست انتقال امتیاز به {target_user.full_name} ({target_user.membership_code})"
+                status=PointTransferRequest.Status.APPROVED, 
+                description=f"انتقال مستقیم امتیاز به {target_user.full_name} ({target_user.membership_code})"
             )
 
-            return Response({"message": "✅ درخواست انتقال امتیاز ثبت شد و پس از تایید مدیر انجام می‌شود."})
+            # پیام موفقیت را هم عوض کنید
+            return Response({"message": "✅ انتقال امتیاز با موفقیت انجام شد."})
         
         return Response(serializer.errors, status=400)
 # --- فاز ۴: API داشبورد اختصاصی مدیریت وام ---
@@ -735,7 +738,7 @@ class AdminLoanDetailView(generics.RetrieveUpdateDestroyAPIView):
                 installment_amount = instance.amount // instance.duration_months
                 installments_to_create = []
                 for i in range(1, instance.duration_months + 1):
-                    due = instance.granted_date + datetime.timedelta(days=30 * i)
+                    due = add_jalali_months(instance.granted_date, i)
                     installments_to_create.append(
                         LoanInstallment(loan=instance, installment_number=i, due_date=due, amount=installment_amount)
                     )
@@ -743,7 +746,7 @@ class AdminLoanDetailView(generics.RetrieveUpdateDestroyAPIView):
             else:
                 # ب) اگر حتی یک قسط پرداخت شده، برای جلوگیری از به هم ریختن تراز مالی، فقط تاریخ سررسیدها را شیفت می‌دهیم
                 for inst in installments:
-                    inst.due_date = instance.granted_date + datetime.timedelta(days=30 * inst.installment_number)
+                    inst.due_date = add_jalali_months(instance.granted_date, inst.installment_number)
                     inst.save()
                     
         return response
@@ -980,7 +983,7 @@ class AdminLoanInstallmentsView(APIView):
                 installment_amount = loan.amount // loan.duration_months
                 installments_to_create = []
                 for i in range(1, loan.duration_months + 1):
-                    due = loan.granted_date + datetime.timedelta(days=30 * i)
+                    due = add_jalali_months(loan.granted_date, i)
                     installments_to_create.append(
                         LoanInstallment(loan=loan, installment_number=i, due_date=due, amount=installment_amount)
                     )
