@@ -254,13 +254,13 @@ class UserDashboardView(APIView):
         def get_sum(queryset):
             return queryset.aggregate(Sum('amount'))['amount__sum'] or 0
 
-        # بررسی وضعیت فعالیت کاربر (پرداخت حق عضویت)
+        # ۱. بررسی وضعیت فعالیت کاربر (پرداخت حق عضویت)
         fee_dep = get_sum(Transaction.objects.filter(user=user, transaction_type=Transaction.Types.MEMBERSHIP_FEE, is_verified=True))
-        fee_wit = get_sum(Transaction.objects.filter(user=user, transaction_type='W_FEE', is_verified=True))
+        fee_wit = get_sum(Transaction.objects.filter(user=user, transaction_type=Transaction.Types.WITHDRAWAL_FEE, is_verified=True))
         has_paid_fee = (fee_dep - fee_wit) > 0
         is_user_active = has_paid_fee or user.role == 'CULTURAL'
 
-        # --- محاسبه دقیق امتیازات (اگر کاربر غیرفعال باشد، امتیاز پس‌انداز وام صفر می‌شود) ---
+        # ۲. محاسبه امتیازات وام (اگر کاربر غیرفعال باشد، امتیاز صفر می‌شود)
         loan_saving_points = 0
         locked_saving_points = 0
         total_loan_points = 0
@@ -270,7 +270,7 @@ class UserDashboardView(APIView):
         is_eligible_for_loan = False
 
         loan_deposits = Transaction.objects.filter(user=user, transaction_type=Transaction.Types.LOAN_SAVING, is_verified=True).order_by('effective_date')
-        loan_withdrawals = Transaction.objects.filter(user=user, transaction_type='W_SAVING', is_verified=True)
+        loan_withdrawals = Transaction.objects.filter(user=user, transaction_type=Transaction.Types.WITHDRAWAL_SAVING, is_verified=True)
 
         if is_user_active:
             for t in loan_deposits:
@@ -293,9 +293,10 @@ class UserDashboardView(APIView):
                     locked_saving_points = max(0, total_loan_points)
                     days_remaining_to_unlock = 90 - days_passed_since_start
 
-        # امتیاز صدقات و معرفی (اگر کاربر فعال باشد)
+        # امتیاز صدقات و معرفی (ویژه کاربران فعال)
         donation_points = 0
         referral_loan_points = 0
+        active_referrals_count = 0
         if is_user_active:
             donation_total = get_sum(Transaction.objects.filter(user=user, transaction_type='SADAQAH', is_verified=True))
             donation_points = int(donation_total * 0.20)
@@ -310,24 +311,40 @@ class UserDashboardView(APIView):
         manual_points = PointLog.objects.filter(user=user).aggregate(Sum('points'))['points__sum'] or 0
         total_unlocked_limit = (donation_points + loan_saving_points + referral_loan_points) + manual_points
 
-        # --- محاسبه تفکیک‌شده‌ی موجودی انواع حساب‌ها برای راهنمایی در زمان برداشت ---
-        st_bal = get_sum(Transaction.objects.filter(user=user, transaction_type='SHORT_TERM', is_verified=True)) - get_sum(Transaction.objects.filter(user=user, transaction_type='W_SHORT', is_verified=True))
-        lt_bal = get_sum(Transaction.objects.filter(user=user, transaction_type__in=['LONG_TERM', 'MONTHLY', 'PROFIT_SAVING'], is_verified=True)) - get_sum(Transaction.objects.filter(user=user, transaction_type__in=['W_LONG', 'W_MONTHLY', 'W_PROFIT'], is_verified=True))
-        loan_bal = get_sum(Transaction.objects.filter(user=user, transaction_type='LOAN_SAVING', is_verified=True)) - get_sum(Transaction.objects.filter(user=user, transaction_type='W_SAVING', is_verified=True))
-        qard_bal = get_sum(Transaction.objects.filter(user=user, transaction_type='QARD', is_verified=True)) - get_sum(Transaction.objects.filter(user=user, transaction_type='W_QRD', is_verified=True))
-        fee_bal = fee_dep - fee_wit
+        # ۳. محاسبه موجودی خالص تفکیک‌شده برای هر صندوق
+        st_dep = get_sum(Transaction.objects.filter(user=user, transaction_type=Transaction.Types.SHORT_TERM, is_verified=True))
+        st_wit = get_sum(Transaction.objects.filter(user=user, transaction_type=Transaction.Types.WITHDRAWAL_SHORT, is_verified=True))
+        st_bal = max(0, st_dep - st_wit)
 
-        # سود دریافتی و قابل برداشت
-        auto_profit = ProfitDistribution.objects.filter(user=user).aggregate(Sum('profit_amount'))['profit_amount__sum'] or 0
-        manual_profit = get_sum(Transaction.objects.filter(user=user, transaction_type='MANUAL_PROFIT', is_verified=True))
-        profit_withdrawn = get_sum(Transaction.objects.filter(user=user, transaction_type='W_MAN_PROFIT', is_verified=True))
-        
-        total_profit_credited = auto_profit + manual_profit
-        net_profit_available = max(0, total_profit_credited - profit_withdrawn)
+        lt_dep = get_sum(Transaction.objects.filter(user=user, transaction_type__in=[Transaction.Types.LONG_TERM, Transaction.Types.MONTHLY_DEPOSIT], is_verified=True))
+        lt_wit = get_sum(Transaction.objects.filter(user=user, transaction_type__in=[Transaction.Types.WITHDRAWAL_LONG, Transaction.Types.WITHDRAWAL_MONTHLY], is_verified=True))
+        lt_bal = max(0, lt_dep - lt_wit)
 
-        user_deposits = st_bal + lt_bal + loan_bal + qard_bal + fee_bal + total_profit_credited
-        user_withdrawals = get_sum(Transaction.objects.filter(user=user, transaction_type__in=ALL_WITHDRAWAL_TYPES, is_verified=True))
-        current_balance = max(0, user_deposits - user_withdrawals)
+        loan_dep_sum = get_sum(loan_deposits)
+        loan_wit_sum = get_sum(loan_withdrawals)
+        loan_bal = max(0, loan_dep_sum - loan_wit_sum)
+
+        qard_dep = get_sum(Transaction.objects.filter(user=user, transaction_type=Transaction.Types.QARD_HASAN, is_verified=True))
+        qard_wit = get_sum(Transaction.objects.filter(user=user, transaction_type=Transaction.Types.WITHDRAWAL_QARD, is_verified=True))
+        qard_bal = max(0, qard_dep - qard_wit)
+
+        fee_bal = max(0, fee_dep - fee_wit)
+
+        # ۴. محاسبه دقیق سود بر اساس تراکنش‌های زنده
+        profit_deposits = get_sum(Transaction.objects.filter(
+            user=user, 
+            transaction_type__in=[Transaction.Types.MANUAL_PROFIT, Transaction.Types.PROFIT_SAVING], 
+            is_verified=True
+        ))
+        profit_withdrawn = get_sum(Transaction.objects.filter(
+            user=user, 
+            transaction_type__in=[Transaction.Types.WITHDRAWAL_MANUAL_PROFIT, Transaction.Types.WITHDRAWAL_PROFIT], 
+            is_verified=True
+        ))
+        net_profit_available = max(0, profit_deposits - profit_withdrawn)
+
+        # ۵. محاسبه موجودی کل (جمع جبری مقادیر خالص تفکیک‌شده بدون کسر مجدد)
+        current_balance = st_bal + lt_bal + loan_bal + qard_bal + fee_bal + net_profit_available
 
         return Response({
             "full_name": user.full_name if user.full_name else user.phone_number,
@@ -336,19 +353,19 @@ class UserDashboardView(APIView):
             "can_manage_loans": user.can_manage_loans,
             "can_manage_investments": getattr(user, 'can_manage_investments', False),
             "current_balance": current_balance,
-            "total_profit_received": net_profit_available, # سود باقی‌مانده قابل برداشت
-            "total_profit_credited": total_profit_credited, # کل سود تاریخچه
-            "profit_withdrawn": profit_withdrawn,
+            "total_profit_received": net_profit_available,  # مانده سود آزاد
+            "total_profit_credited": profit_deposits,      # کل سودهای واریزی زنده
+            "profit_withdrawn": profit_withdrawn,          # کل سود برداشت شده
             "balances": {
-                "short_term": max(0, st_bal),
-                "long_term": max(0, lt_bal),
-                "loan_saving": max(0, loan_bal),
-                "qard": max(0, qard_bal),
-                "fee": max(0, fee_bal)
+                "short_term": st_bal,
+                "long_term": lt_bal,
+                "loan_saving": loan_bal,
+                "qard": qard_bal,
+                "fee": fee_bal
             },
             "status": "فعال" if is_user_active else "غیرفعال",
             "is_active": is_user_active,
-            "referrals_count": active_referrals_count if 'active_referrals_count' in locals() else 0,
+            "referrals_count": active_referrals_count,
             "loan_points_details": {
                 "total_limit": total_unlocked_limit + locked_saving_points,
                 "locked_limit": locked_saving_points,
@@ -363,7 +380,7 @@ class UserDashboardView(APIView):
                 "days_remaining": days_remaining_to_unlock,
             }
         })
-
+    
 # --- بخش چهارم: گزارش مدیریتی (اصلاح شده برای نمایش سود حساب‌های فرهنگی) ---
 # --- بخش چهارم: گزارش مدیریتی (ترازنامه دقیق با محاسبه مقادیر خالص) ---
 class GeneralReportView(APIView):
@@ -557,7 +574,6 @@ class PointTransferView(APIView):
             target_user_id = serializer.validated_data.get('target_user_id')
             user = request_user
             
-            # --- جراحی: تشخیص اینکه کاربر اصلی است یا زیرمجموعه ---
             if target_user_id:
                 try:
                     user = User.objects.get(id=target_user_id, parent=request_user)
@@ -578,17 +594,27 @@ class PointTransferView(APIView):
             if target_user.id == user.id:
                 return Response({"error": "نمی‌توانید به خودتان انتقال دهید."}, status=400)
 
+            # --- جراحی: هماهنگی کامل فرمول با داشبورد و جلوگیری از منفی شدن ---
             today = datetime.date.today()
-            l_trans = Transaction.objects.filter(user=user, transaction_type='LOAN_SAVING', is_verified=True).order_by('effective_date')
-            sys_points = 0
+            loan_deposits = Transaction.objects.filter(user=user, transaction_type='LOAN_SAVING', is_verified=True).order_by('effective_date')
+            loan_withdrawals = Transaction.objects.filter(user=user, transaction_type='W_SAVING', is_verified=True)
             
-            if l_trans.exists():
-                first_date = l_trans.first().effective_date
+            total_loan_points = 0
+            for t in loan_deposits:
+                days_active = (today - t.effective_date).days
+                if days_active > 0:
+                    total_loan_points += int((t.amount / 1000000) * 7000 * days_active)
+                    
+            for w in loan_withdrawals:
+                days_active = (today - w.effective_date).days
+                if days_active > 0:
+                    total_loan_points -= int((w.amount / 1000000) * 7000 * days_active)
+
+            loan_saving_points = 0
+            if loan_deposits.exists():
+                first_date = loan_deposits.first().effective_date
                 if (today - first_date).days >= 90:
-                    for t in l_trans:
-                        d = (today - t.effective_date).days
-                        if d > 0:
-                            sys_points += int((t.amount / 1000000) * 7000 * d)
+                    loan_saving_points = max(0, total_loan_points)
             
             don = Transaction.objects.filter(user=user, transaction_type='SADAQAH', is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
             don_points = int(don * 0.20)
@@ -598,12 +624,12 @@ class PointTransferView(APIView):
             
             man_points = PointLog.objects.filter(user=user).aggregate(Sum('points'))['points__sum'] or 0
             
-            current_total_points = sys_points + don_points + ref_points + man_points
+            # قرار دادن حد صفر (max 0) تا اگر کاربری در گذشته باگ خورده، امتیاز منفی در محاسبات لحاظ نشود
+            current_total_points = max(0, loan_saving_points + don_points + ref_points + man_points)
 
             if current_total_points < points:
                 return Response({"error": f"امتیاز آزاد شما کافی نیست. موجودی قابل انتقال: {current_total_points:,}"}, status=400)
 
-            # وضعیت را به APPROVED تغییر دهید
             PointTransferRequest.objects.create(
                 sender=user,
                 receiver=target_user,
@@ -612,29 +638,26 @@ class PointTransferView(APIView):
                 description=f"انتقال مستقیم امتیاز به {target_user.full_name} ({target_user.membership_code})"
             )
 
-            # پیام موفقیت را هم عوض کنید
             return Response({"message": "✅ انتقال امتیاز با موفقیت انجام شد."})
         
         return Response(serializer.errors, status=400)
+    
 class LoanDashboardReportView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        if request.user.role not in ['ADMIN', 'OBSERVER'] and not request.user.can_manage_loans:
+        if request.user.role not in ['ADMIN', 'OBSERVER'] and not getattr(request.user, 'can_manage_loans', False):
             return Response({"error": "شما دسترسی ندارید."}, status=403)
         
-        # ۱. کل پس‌انداز وام (ورودی‌ها منهای خروجی‌ها)
+        # ۱. کل پس‌انداز وام (هم اعضا و هم سودهایی که به حساب صندوق واریز شده)
         deposits = Transaction.objects.filter(transaction_type='LOAN_SAVING', is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
         withdrawals = Transaction.objects.filter(transaction_type='W_SAVING', is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_loan_saving = deposits - withdrawals
 
-        # ۲. کل سودهای تخصیص‌یافته به وام
-        total_allocated_profit = FundProfitAllocation.objects.aggregate(Sum('loan_saving_share'))['loan_saving_share__sum'] or 0
+        # ۲. ظرفیت پایه وام‌دهی (فقط ۵۰٪ کل پس‌انداز وام) - سود مجزا حذف شد چون داخل موجودی است
+        base_capacity = int(total_loan_saving * 0.5)
 
-        # ۳. ظرفیت پایه وام‌دهی (۵۰٪ اصل پول + ۱۰۰٪ سودها)
-        base_capacity = int((total_loan_saving * 0.5) + total_allocated_profit)
-
-        # ۴. محاسبه دقیق بر اساس اقساط واقعی پرداخت‌شده در جدول LoanInstallment
+        # ۳. محاسبه اقساط پرداخت شده واقعی
         approved_loans = LoanRequest.objects.filter(status='APPROVED', granted_date__isnull=False)
         
         total_paid_loans = 0
@@ -642,28 +665,27 @@ class LoanDashboardReportView(APIView):
 
         for loan in approved_loans:
             total_paid_loans += loan.amount
-            
-            # جمع کل مبالغ اقساطی که برای این وام تیکِ پرداخت (is_paid=True) خورده‌اند
-            paid_installments_sum = loan.installments.filter(is_paid=True).aggregate(Sum('amount'))['amount__sum'] or 0
-            total_actual_returned += paid_installments_sum
+            paid_sum = loan.installments.filter(is_paid=True).aggregate(Sum('amount'))['amount__sum'] or 0
+            total_actual_returned += paid_sum
 
         total_actual_returned = int(total_actual_returned)
         
-        # ۵. سرمایه درگیر فعلی (وام‌هایی که هنوز قسط‌شان پرداخت نشده است)
+        # ۵. سرمایه درگیر فعلی
         active_debt = total_paid_loans - total_actual_returned
         
-        # ۶. ظرفیت آزاد برای وام دادنِ همین الان
+        # ۶. ظرفیت آزاد واقعی برای وام‌دهی
         free_capacity = base_capacity - active_debt
 
         return Response({
             "total_loan_saving": total_loan_saving,
-            "total_allocated_profit": total_allocated_profit,
+            "total_allocated_profit": 0, # این را صفر می‌فرستیم تا فرانت‌اند دچار خطای Undefined نشود
             "base_capacity": base_capacity,
             "total_paid_loans": total_paid_loans,
-            "total_virtual_returned": total_actual_returned, # نام فیلد برای سازگاری با فرانت
+            "total_virtual_returned": total_actual_returned, 
             "active_debt": active_debt,
             "free_capacity": free_capacity
         })
+    
 # --- فاز ۴: API مدیریت لیست وام‌ها برای مدیر ---
 class AdminLoanManagementView(generics.ListCreateAPIView):
     serializer_class = AdminLoanActionSerializer

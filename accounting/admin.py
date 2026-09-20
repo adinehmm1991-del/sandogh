@@ -162,7 +162,7 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
     def total_profit_display(self, obj): return f"{obj.total_profit_amount:,} تومان"
 
     def _get_period_calculation(self, period):
-        """ موتور مرکزی محاسبه سود دوره‌ای با تفکیک کامل کوتاه‌مدت و بلندمدت """
+        """ موتور مرکزی محاسبه سود دوره‌ای با ترازنامه‌ی ۱۰۰٪ دقیق و تفکیک‌شده """
         total_profit = period.total_profit_amount
         start_date_g = period.start_date
         end_date_g = period.end_date
@@ -170,7 +170,6 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
 
         users = User.objects.exclude(role='FUND_ACCOUNT')
         
-        # دسته‌بندی حساب‌ها
         st_types = ['SHORT_TERM']
         st_wit = ['W_SHORT']
         lt_types = ['LONG_TERM', 'MONTHLY', 'PROFIT_SAVING', 'MANUAL_PROFIT', 'SADAQAH', 'WAQF', 'SACRIFICE', 'BOOK', 'KHOMS_IMAM', 'KHOMS_SADAT', 'WAQF_GEN', 'WAQF_BOOK', 'WAQF_MEDIA', 'WAQF_INFRA']
@@ -180,7 +179,6 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
         qard_fee_types = ['QARD', 'FEE']
         qard_fee_wit = ['W_QARD', 'W_FEE']
 
-        # ۱. استخراج مبالغ علی‌الحساب
         ali_hesab_descriptions = []
         for rate in period.included_months.all():
             j_date = jdatetime.date.fromgregorian(date=rate.month_year)
@@ -193,7 +191,7 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
         total_loan_points = 0
         total_qard_fee_points = 0
 
-        # ۲. محاسبه دقیق امتیازات روزشمار (قدم اول منطق شما)
+        # قدم اول: محاسبه سهم هر یک میلیون تومان در روز برای همه سرمایه‌ها
         for user in users:
             def get_pts(dep_types, wit_types):
                 dep_before = Transaction.objects.filter(user=user, transaction_type__in=dep_types, effective_date__lt=start_date_g, is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
@@ -208,7 +206,6 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
                 for day_offset in range(days_in_period):
                     curr_day = start_date_g + datetime.timedelta(days=day_offset)
                     if curr_day in changes: current_bal = max(0, current_bal + changes[curr_day])
-                    # اختصاص امتیاز به ازای هر یک میلیون تومان در هر روز
                     pts += (current_bal // 1000000) * 1000000
                 return pts
 
@@ -236,13 +233,12 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
         grand_total_points = total_st_points + total_lt_points + total_loan_points + total_qard_fee_points
         profit_per_point = total_profit / grand_total_points if grand_total_points > 0 else 0
 
-        # ۳. توزیع و اعمال کسر صندوق، علی‌الحساب و تضمین‌ها (قدم دوم، سوم و چهارم)
         results = []
         fund_net_profit_saving = 0 
         
-        # ۱۰۰٪ سود وام به پس‌انداز وام صندوق می‌رود
+        # ۱۰۰٪ سود وام به صندوق (بخش وام) می‌رود
         fund_net_loan_saving = int(total_loan_points * profit_per_point) 
-        # ۱۰۰٪ سود سایر حساب‌ها (حق عضویت و...) به سود صندوق می‌رود
+        # ۱۰۰٪ سود حق عضویت و قرض‌الحسنه به صندوق (بخش سود) می‌رود
         fund_net_profit_saving += int(total_qard_fee_points * profit_per_point) 
 
         f_share_st = float(period.fund_share_short_term) / 100.0
@@ -253,11 +249,12 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
         for ud in user_data:
             u = ud['user']
             
-            # محاسبه سود ناخالص
             gross_st = ud['st_p'] * profit_per_point
             gross_lt = ud['lt_p'] * profit_per_point
+            gross_loan = ud['loan_p'] * profit_per_point
+            gross_qf = ud['qf_p'] * profit_per_point
             
-            # کسر سهم صندوق (قدم دوم)
+            # قدم دوم: کسر درصد صندوق از بلندمدت و کوتاه‌مدت
             fund_cut_st = gross_st * f_share_st
             fund_cut_lt = gross_lt * f_share_lt
             
@@ -266,17 +263,18 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
             user_net_st = gross_st - fund_cut_st
             user_net_lt = gross_lt - fund_cut_lt
             
-            # میانگین سرمایه برای محاسبه تضمین (قدم چهارم)
             avg_cap_st = ud['st_p'] / days_in_period
             avg_cap_lt = ud['lt_p'] / days_in_period
+            avg_cap_loan = ud['loan_p'] / days_in_period
+            avg_cap_qf = ud['qf_p'] / days_in_period
             
+            # قدم چهارم: جبران از صندوق در صورت کمتر بودن از حداقل سود
             min_req_st = avg_cap_st * g_rate_st
             min_req_lt = avg_cap_lt * g_rate_lt
             
             boost_st = max(0, min_req_st - user_net_st)
             boost_lt = max(0, min_req_lt - user_net_lt)
             
-            # جبران از جیب صندوق به حساب کاربر
             fund_net_profit_saving -= (boost_st + boost_lt)
             user_net_st += boost_st
             user_net_lt += boost_lt
@@ -284,11 +282,17 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
             total_user_net = int(user_net_st + user_net_lt)
             ali_hesab = ud['ali_hesab']
             
-            # کسر علی‌الحساب از سود نهایی (قدم سوم)
-            final_payout = total_user_net - ali_hesab
-            if final_payout < 0: final_payout = 0 
-            
-            if total_user_net > 0 or ali_hesab > 0:
+            # قدم سوم: کسر علی‌الحساب
+            if total_user_net >= ali_hesab:
+                final_payout = total_user_net - ali_hesab
+                deficit = 0
+            else:
+                final_payout = 0
+                # اگر کاربر بیشتر از حقش علی‌الحساب گرفته، صندوق ضررش را می‌پذیرد تا ترازنامه به هم نریزد
+                deficit = ali_hesab - total_user_net 
+                fund_net_profit_saving -= deficit
+
+            if total_user_net > 0 or ali_hesab > 0 or gross_loan > 0 or gross_qf > 0:
                 results.append({
                     'user': u,
                     'avg_st': int(avg_cap_st),
@@ -303,14 +307,20 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
                     'boost_lt': int(boost_lt),
                     'net_lt': int(user_net_lt),
                     
+                    'avg_loan': int(avg_cap_loan),
+                    'gross_loan': int(gross_loan),
+                    
+                    'avg_qf': int(avg_cap_qf),
+                    'gross_qf': int(gross_qf),
+                    
                     'total_net': total_user_net,
                     'ali_hesab': ali_hesab,
                     'final_payout': final_payout
                 })
 
-        return results, int(fund_net_profit_saving), fund_net_loan_saving
+        return results, int(fund_net_profit_saving), fund_net_loan_saving, profit_per_point
 
-    @admin.action(description='📊 ۱. دریافت اکسل پیش‌نمایش (با جزئیات تفکیکی کامل)')
+    @admin.action(description='📊 ۱. دریافت اکسل پیش‌نمایش (ترازنامه شفاف ۲۰ ستونه با اثبات ریاضی)')
     def preview_period_profit_excel(self, request, queryset):
         import csv
         from django.http import HttpResponse
@@ -320,37 +330,52 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
             return
 
         period = queryset.first()
-        results, fund_profit, fund_loan = self._get_period_calculation(period)
+        results, fund_profit, fund_loan, profit_per_point = self._get_period_calculation(period)
 
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = f'attachment; filename="Detailed_Profit_Preview_{period.name}.csv"'
         response.write('\ufeff'.encode('utf8')) 
         writer = csv.writer(response)
         
-        # هدرهای بسیار دقیق و تفکیک شده
+        # --- نمایش نرخ هر یک میلیون تومان در هدر فایل ---
+        writer.writerow(['گزارش محاسباتی دوره:', period.name])
+        writer.writerow(['سهم سود هر یک میلیون تومان در یک روز:', f"{profit_per_point:,.2f} تومان"])
+        writer.writerow([])
+
         writer.writerow([
             'ردیف', 'نام کاربر', 'کد عضویت', 
             'میانگین سرمایه کوتاه‌مدت', 'سود ناخالص کوتاه‌مدت', 'سهم کسر شده صندوق (کوتاه‌مدت)', 'جبران تضمین (کوتاه‌مدت)', 'سود خالص کوتاه‌مدت',
             'میانگین سرمایه بلندمدت', 'سود ناخالص بلندمدت', 'سهم کسر شده صندوق (بلندمدت)', 'جبران تضمین (بلندمدت)', 'سود خالص بلندمدت',
-            'جمع کل سود خالص شخص', 'علی‌الحساب پرداختی در دوره', 'مبلغ قابل واریز (قطعی)'
+            'میانگین پس‌انداز وام', 'سود وام (۱۰۰٪ سهم صندوق)',
+            'میانگین حق‌عضویت/قرض‌الحسنه', 'سود سایر (۱۰۰٪ سهم صندوق)',
+            'جمع کل سود خالص شخص', 'علی‌الحساب پرداختی', 'مبلغ قابل واریز (جدید)'
         ])
 
         tot_payout = 0
+        tot_ali_hesab = 0
         idx = 1
         for r in results:
             writer.writerow([
                 idx, r['user'].full_name, r['user'].membership_code, 
                 r['avg_st'], r['gross_st'], r['fund_cut_st'], r['boost_st'], r['net_st'],
                 r['avg_lt'], r['gross_lt'], r['fund_cut_lt'], r['boost_lt'], r['net_lt'],
+                r['avg_loan'], r['gross_loan'],
+                r['avg_qf'], r['gross_qf'],
                 r['total_net'], r['ali_hesab'], r['final_payout']
             ])
             tot_payout += r['final_payout']
+            tot_ali_hesab += r['ali_hesab']
             idx += 1
 
-        writer.writerow(['---'] * 16)
-        writer.writerow(['مجموع مبالغ واریزی به کاربران', '', '', '', '', '', '', '', '', '', '', '', '', '', '', tot_payout])
-        writer.writerow(['سهم اختصاصی صندوق (سود قطعی + رسوبات غیرمشمول)', '', '', '', '', '', '', '', '', '', '', '', '', '', '', fund_profit])
-        writer.writerow(['سهم تزریقی به پس‌انداز وام صندوق', '', '', '', '', '', '', '', '', '', '', '', '', '', '', fund_loan])
+        writer.writerow(['---'] * 20)
+        writer.writerow(['۱. مجموع مبالغ واریزی جدید به کاربران', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', tot_payout])
+        writer.writerow(['۲. مجموع علی‌الحساب‌هایی که قبلاً پرداخت شده', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', tot_ali_hesab])
+        writer.writerow(['۳. سهم اختصاصی صندوق (سود قطعی + رسوبات)', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', fund_profit])
+        writer.writerow(['۴. سهم تزریقی به پس‌انداز وام صندوق', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', fund_loan])
+        
+        total_taraz = tot_payout + tot_ali_hesab + fund_profit + fund_loan
+        writer.writerow([])
+        writer.writerow(['ترازنامه نهایی (جمع ۴ مورد بالا - باید دقیقاً برابر کل سود دوره باشد):', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', total_taraz])
         
         return response
 
@@ -365,7 +390,7 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
             self.message_user(request, "خطا: سود این دوره قبلاً محاسبه و تقسیم شده است!", messages.ERROR)
             return
 
-        results, fund_profit, fund_loan = self._get_period_calculation(period)
+        results, fund_profit, fund_loan, _ = self._get_period_calculation(period)
         end_date_g = period.end_date
         
         transactions_to_create = []

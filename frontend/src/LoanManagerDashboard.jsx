@@ -16,11 +16,10 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
 import EditIcon from '@mui/icons-material/Edit';
 import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
-import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import SavingsIcon from '@mui/icons-material/Savings';
 import ListAltIcon from '@mui/icons-material/ListAlt';
 
-// --- جراحی برای موبایل: کامپوننت اختصاصی ورودی مبلغ برای جلوگیری از قفل شدن کیبورد ---
+// --- کامپوننت اختصاصی ورودی مبلغ برای جلوگیری از قفل شدن کیبورد ---
 const InstallmentInput = ({ inst, installments, setInstallments }) => {
     const [isFocused, setIsFocused] = useState(false);
 
@@ -28,7 +27,6 @@ const InstallmentInput = ({ inst, installments, setInstallments }) => {
         <input 
             type="text"
             inputMode="numeric"
-            // فرمول جادویی: اگر در حال تایپ بودیم، کاما نذار تا موبایل باگ نخوره. اگر خارج شدیم کاما بذار!
             value={isFocused ? inst.amount : (inst.amount ? Number(inst.amount).toLocaleString() : '')}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
@@ -44,7 +42,7 @@ const InstallmentInput = ({ inst, installments, setInstallments }) => {
                 textAlign: 'left',
                 direction: 'ltr',
                 fontFamily: 'inherit',
-                backgroundColor: isFocused ? '#fffde7' : '#fff', // رنگ پس‌زمینه در هنگام تایپ کمی تغییر می‌کند
+                backgroundColor: isFocused ? '#fffde7' : '#fff', 
                 outline: isFocused ? '2px solid #1976d2' : 'none'
             }}
         />
@@ -66,7 +64,6 @@ const LoanManagerDashboard = () => {
     const [openManualDialog, setOpenManualDialog] = useState(false);
     const [manualData, setManualData] = useState({ target_membership_code: '', amount: '', duration_months: 12, granted_date: new Date().toISOString().split('T')[0], description: 'وام دستی مصوب' });
 
-    // استیت‌های اختصاصی مربوط به پنل اقساط
     const [openInstallmentsDialog, setOpenInstallmentsDialog] = useState(false);
     const [installments, setInstallments] = useState([]);
     const [selectedLoanForInst, setSelectedLoanForInst] = useState(null);
@@ -105,7 +102,6 @@ const LoanManagerDashboard = () => {
         } catch (err) {}
     };
 
-    // --- توابع مدیریت اقساط ---
     const openInstallments = async (loan) => {
         setSelectedLoanForInst(loan);
         setOpenInstallmentsDialog(true);
@@ -127,7 +123,8 @@ const LoanManagerDashboard = () => {
                 id: inst.id,
                 is_paid: !inst.is_paid
             }, { headers: { Authorization: `Token ${token}` } });
-            fetchInstallments(selectedLoanForInst.id); // آپدیت لیست بعد از تیک زدن
+            fetchInstallments(selectedLoanForInst.id); 
+            fetchDashboardData(); // آپدیت ظرفیت آزاد در پس‌زمینه
         } catch (err) { alert('خطا در ذخیره وضعیت پرداخت'); }
     };
 
@@ -139,12 +136,11 @@ const LoanManagerDashboard = () => {
                 amount: inst.amount
             }, { headers: { Authorization: `Token ${token}` } });
             alert('✅ مبلغ قسط بروزرسانی شد.');
-            // برای بروزرسانی خودکار اقساط بعدی (تراز کردن مبالغ) دوباره از سرور می‌خوانیم
             fetchInstallments(selectedLoanForInst.id);
+            fetchDashboardData();
         } catch (err) { alert('خطا در بروزرسانی مبلغ'); }
     };
 
-    // --- سایر توابع (ثبت وام و ...) ---
     const handleOpenApprove = (loan, isEdit = false) => {
         setSelectedLoan(loan);
         setApproveData({ 
@@ -209,7 +205,6 @@ const LoanManagerDashboard = () => {
     if (loading) return <div style={{textAlign: 'center', marginTop: '50px', direction: 'rtl', fontFamily: 'Tahoma'}}>در حال بارگذاری...</div>;
     if (!data) return null;
 
-    // محاسبات آماری برای مودال اقساط
     const totalPaidInst = installments.filter(i => i.is_paid).reduce((sum, i) => sum + Number(i.amount), 0);
     const totalRemInst = installments.filter(i => !i.is_paid).reduce((sum, i) => sum + Number(i.amount), 0);
     const delayedInst = installments.filter(i => !i.is_paid && new Date(i.due_date) < new Date()).length;
@@ -225,15 +220,14 @@ const LoanManagerDashboard = () => {
 
                 <Divider style={{ marginBottom: '25px' }} />
 
-                {/* ردیف اول: منابع و ظرفیت پایه */}
                 <Typography variant="subtitle1" style={{ fontWeight: 'bold', color: '#424242', marginBottom: '15px' }}>منابع مالی وام‌دهی صندوق</Typography>
-                <Grid container spacing={3} mb={4}>
-                    <Grid item xs={12} md={4}>
+                <Grid container spacing={3} mb={4} justifyContent="center">
+                    <Grid item xs={12} md={6}>
                         <Card style={{ backgroundColor: '#f8f9fa', border: '1px solid #e0e0e0', boxShadow: 'none', height: '100%' }}>
                             <CardContent>
                                 <Box display="flex" alignItems="center" mb={1} color="textSecondary">
                                     <AccountBalanceWalletIcon style={{ marginLeft: '8px', fontSize: '1.2rem' }} />
-                                    <Typography variant="subtitle2">کل سرمایه پس‌انداز وام اعضا</Typography>
+                                    <Typography variant="subtitle2">کل سرمایه پس‌انداز وام (اعضا + صندوق)</Typography>
                                 </Box>
                                 <Typography variant="h5" style={{ fontWeight: 'bold', color: '#1976d2', marginTop: '5px' }}>
                                     {data.total_loan_saving?.toLocaleString()} <span style={{fontSize:'0.6em', color:'gray', fontWeight: 'normal'}}>تومان</span>
@@ -242,21 +236,7 @@ const LoanManagerDashboard = () => {
                         </Card>
                     </Grid>
                     
-                    <Grid item xs={12} md={4}>
-                        <Card style={{ backgroundColor: '#f8f9fa', border: '1px solid #e0e0e0', boxShadow: 'none', height: '100%' }}>
-                            <CardContent>
-                                <Box display="flex" alignItems="center" mb={1} color="textSecondary">
-                                    <TrendingUpIcon style={{ marginLeft: '8px', fontSize: '1.2rem' }} />
-                                    <Typography variant="subtitle2">سود حاصل از سرمایه‌گذاری وام</Typography>
-                                </Box>
-                                <Typography variant="h5" style={{ fontWeight: 'bold', color: '#2e7d32', marginTop: '5px' }}>
-                                    {data.total_allocated_profit?.toLocaleString()} <span style={{fontSize:'0.6em', color:'gray', fontWeight: 'normal'}}>تومان</span>
-                                </Typography>
-                            </CardContent>
-                        </Card>
-                    </Grid>
-
-                    <Grid item xs={12} md={4}>
+                    <Grid item xs={12} md={6}>
                         <Card style={{ background: 'linear-gradient(135deg, #1e88e5 0%, #1565c0 100%)', color: 'white', height: '100%' }}>
                             <CardContent>
                                 <Box display="flex" alignItems="center" mb={1}>
@@ -266,13 +246,12 @@ const LoanManagerDashboard = () => {
                                 <Typography variant="h4" style={{ fontWeight: 'bold', marginTop: '5px' }}>
                                     {data.base_capacity?.toLocaleString()} <span style={{fontSize:'0.5em', opacity: 0.8, fontWeight: 'normal'}}>تومان</span>
                                 </Typography>
-                                <Typography variant="caption" style={{ opacity: 0.8, display: 'block', marginTop: '5px' }}>(۵۰٪ کل پس‌انداز وام + کل سود حاصل از آن)</Typography>
+                                <Typography variant="caption" style={{ opacity: 0.8, display: 'block', marginTop: '5px' }}>(۵۰٪ کل سرمایه پس‌انداز وام)</Typography>
                             </CardContent>
                         </Card>
                     </Grid>
                 </Grid>
 
-                {/* ردیف دوم: گردش مالی وام‌ها */}
                 <Typography variant="subtitle1" style={{ fontWeight: 'bold', color: '#424242', marginBottom: '15px' }}>گردش مالی و موجودی فعلی</Typography>
                 <Grid container spacing={3} mb={4}>
                     <Grid item xs={12} sm={6} md={3}>
@@ -283,7 +262,7 @@ const LoanManagerDashboard = () => {
                     </Grid>
                     <Grid item xs={12} sm={6} md={3}>
                         <Card elevation={2} style={{ height: '100%' }}><CardContent>
-                            <Typography variant="caption" color="textSecondary">اقساط برگشتی (مجازی)</Typography>
+                            <Typography variant="caption" color="textSecondary">اقساط برگشتی</Typography>
                             <Typography variant="h6" style={{fontWeight:'bold', color:'#00897b', marginTop:'5px'}}>{data.total_virtual_returned?.toLocaleString()}</Typography>
                         </CardContent></Card>
                     </Grid>
@@ -310,7 +289,6 @@ const LoanManagerDashboard = () => {
                     <Tab label="گزارش پس‌انداز وام اعضا" style={{fontWeight: 'bold', fontSize: '1rem'}} />
                 </Tabs>
 
-                {/* تب اول: پرونده‌ها */}
                 {tabIndex === 0 && (
                     <>
                         <Box display="flex" justifyContent="space-between" mb={2}>
@@ -324,6 +302,7 @@ const LoanManagerDashboard = () => {
                                         <TableCell>متقاضی</TableCell>
                                         <TableCell>کد عضویت</TableCell>
                                         <TableCell>مبلغ</TableCell>
+                                        <TableCell>مدت</TableCell>
                                         <TableCell>تاریخ ثبت / اعطا</TableCell>
                                         <TableCell align="center">وضعیت</TableCell>
                                         <TableCell align="center">عملیات</TableCell>
@@ -335,6 +314,7 @@ const LoanManagerDashboard = () => {
                                             <TableCell>{loan.user_name} {loan.is_manual && <Chip label="دستی" size="small" color="primary" variant="outlined" style={{height:'20px', fontSize:'0.7rem'}}/>}</TableCell>
                                             <TableCell>{loan.membership_code}</TableCell>
                                             <TableCell style={{fontWeight:'bold', color: '#1565c0'}} dir="ltr">{loan.amount.toLocaleString()}</TableCell>
+                                            <TableCell>{loan.duration_months} ماه</TableCell>
                                             <TableCell dir="ltr" style={{fontSize: '0.85rem'}}>
                                                 {loan.status === 'APPROVED' && loan.granted_date 
                                                     ? `اعطا: ${new Date(loan.granted_date).toLocaleDateString('fa-IR')}` 
@@ -368,7 +348,6 @@ const LoanManagerDashboard = () => {
                     </>
                 )}
 
-                {/* تب دوم: گزارش پس‌انداز */}
                 {tabIndex === 1 && (
                     <TableContainer component={Paper} variant="outlined">
                         <Table size="small">
@@ -444,7 +423,6 @@ const LoanManagerDashboard = () => {
                                             <TableCell><strong>{inst.number}</strong></TableCell>
                                             <TableCell dir="ltr" style={{color: isDelayed ? 'red' : 'inherit'}}>{new Date(inst.due_date).toLocaleDateString('fa-IR')}</TableCell>
                                             
-                                            {/* --- استفاده از کامپوننت هوشمند برای ویرایش راحت در موبایل --- */}
                                             <TableCell>
                                                 <InstallmentInput inst={inst} installments={installments} setInstallments={setInstallments} />
                                             </TableCell>
@@ -468,7 +446,7 @@ const LoanManagerDashboard = () => {
                 </DialogActions>
             </Dialog>
 
-            {/* مودال تایید و ویرایش وام */}
+            {/* مودال تایید و ویرایش وام (جراحی فیلد مدت زمان بازپرداخت) */}
             <Dialog open={openApproveDialog} onClose={() => setOpenApproveDialog(false)} fullWidth maxWidth="xs" dir="rtl" PaperProps={{ style: { overflow: 'visible' } }}>
                 <DialogTitle style={{fontFamily:'Tahoma', fontWeight:'bold'}}>{selectedLoan?.status === 'PENDING' ? 'تعیین وضعیت پرونده' : 'ویرایش پرونده وام'}</DialogTitle>
                 <DialogContent style={{ overflow: 'visible', minHeight: '350px' }}>
@@ -483,12 +461,16 @@ const LoanManagerDashboard = () => {
 
                     {approveData.status === 'APPROVED' && (
                         <>
-                            <FormControl fullWidth style={{marginBottom: '15px'}}>
-                                <InputLabel>مدت بازپرداخت</InputLabel>
-                                <Select value={approveData.duration_months} label="مدت بازپرداخت" onChange={(e) => setApproveData({...approveData, duration_months: e.target.value})}>
-                                    <MenuItem value={10}>۱۰ ماهه</MenuItem><MenuItem value={12}>۱۲ ماهه</MenuItem><MenuItem value={18}>۱۸ ماهه</MenuItem><MenuItem value={24}>۲۴ ماهه</MenuItem>
-                                </Select>
-                            </FormControl>
+                            {/* فیلد ورودی آزاد جایگزین منوی کشویی شد */}
+                            <TextField 
+                                fullWidth 
+                                label="مدت بازپرداخت (تعداد ماه‌ها)" 
+                                type="number"
+                                inputProps={{ min: 1 }}
+                                value={approveData.duration_months} 
+                                onChange={(e) => setApproveData({...approveData, duration_months: parseInt(e.target.value) || 1})} 
+                                style={{ marginBottom: '15px' }}
+                            />
                             
                             <DatePicker
                                 calendar={persian}
@@ -508,7 +490,7 @@ const LoanManagerDashboard = () => {
                 </DialogActions>
             </Dialog>
 
-            {/* مودال وام دستی */}
+            {/* مودال وام دستی (جراحی فیلد مدت زمان بازپرداخت) */}
             <Dialog open={openManualDialog} onClose={() => setOpenManualDialog(false)} fullWidth maxWidth="sm" dir="rtl" PaperProps={{ style: { overflow: 'visible' } }}>
                 <DialogTitle style={{fontFamily:'Tahoma', fontWeight:'bold'}}>ثبت وام دستی (بدون کسر امتیاز)</DialogTitle>
                 <DialogContent style={{ overflow: 'visible', minHeight: '350px' }}>
@@ -520,12 +502,16 @@ const LoanManagerDashboard = () => {
                             <TextField fullWidth label="مبلغ وام (تومان)" value={manualData.amount ? Number(manualData.amount).toLocaleString() : ''} onChange={(e) => handleAmountChange(e, setManualData, manualData, 'amount')} />
                         </Grid>
                         <Grid item xs={12} sm={6}>
-                            <FormControl fullWidth style={{ marginTop: '10px' }}>
-                                <InputLabel>مدت بازپرداخت</InputLabel>
-                                <Select value={manualData.duration_months} label="مدت بازپرداخت" onChange={(e) => setManualData({...manualData, duration_months: e.target.value})}>
-                                    <MenuItem value={12}>۱۲ ماهه</MenuItem><MenuItem value={18}>۱۸ ماهه</MenuItem><MenuItem value={24}>۲۴ ماهه</MenuItem>
-                                </Select>
-                            </FormControl>
+                            {/* فیلد ورودی آزاد جایگزین منوی کشویی شد */}
+                            <TextField 
+                                fullWidth 
+                                label="مدت بازپرداخت (تعداد ماه‌ها)" 
+                                type="number"
+                                inputProps={{ min: 1 }}
+                                value={manualData.duration_months} 
+                                onChange={(e) => setManualData({...manualData, duration_months: parseInt(e.target.value) || 1})} 
+                                style={{ marginTop: '10px' }}
+                            />
                         </Grid>
                         <Grid item xs={12} sm={6}>
                             <DatePicker

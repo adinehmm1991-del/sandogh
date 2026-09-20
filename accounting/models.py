@@ -248,20 +248,53 @@ class LoanRequest(models.Model):
         from users.utils import send_pattern_sms
         is_new = self.pk is None
         old_status = None
-        if not is_new: old_status = LoanRequest.objects.get(pk=self.pk).status
+        old_duration = None
+        old_amount = None
+        old_date = None
+        
+        # استخراج اطلاعات قبلی وام پیش از ذخیره تغییرات جدید
+        if not is_new:
+            try:
+                old_obj = LoanRequest.objects.get(pk=self.pk)
+                old_status = old_obj.status
+                old_duration = old_obj.duration_months
+                old_amount = old_obj.amount
+                old_date = old_obj.granted_date
+            except LoanRequest.DoesNotExist:
+                pass
+
         super().save(*args, **kwargs)
+        
+        # --- موتور هوشمند تولید و بازتولید اقساط ---
         if self.status == self.Status.APPROVED and self.granted_date and self.duration_months > 0:
             from .models import LoanInstallment
-            if not LoanInstallment.objects.filter(loan=self).exists():
+            installments = LoanInstallment.objects.filter(loan=self)
+            
+            needs_recreate = False
+            if not installments.exists():
+                needs_recreate = True
+            else:
+                # بررسی اینکه آیا قسطی پرداخت شده است یا خیر
+                has_paid = installments.filter(is_paid=True).exists()
+                if not has_paid:
+                    # اگر قسطی پرداخت نشده باشد و مدیر تعداد ماه‌ها، مبلغ یا تاریخ را تغییر دهد، اقساط بازتولید می‌شوند
+                    if old_duration != self.duration_months or old_amount != self.amount or old_date != self.granted_date:
+                        needs_recreate = True
+            
+            if needs_recreate:
+                installments.delete()
                 installment_amount = self.amount // self.duration_months
+                installments_to_create = []
                 for i in range(1, self.duration_months + 1):
                     due = add_jalali_months(self.granted_date, i)
-                    LoanInstallment.objects.create(
-                        loan=self, installment_number=i, due_date=due, amount=installment_amount
+                    installments_to_create.append(
+                        LoanInstallment(loan=self, installment_number=i, due_date=due, amount=installment_amount)
                     )
+                LoanInstallment.objects.bulk_create(installments_to_create)
+
         target_name = self.user.full_name or self.user.phone_number
         try:
-            # ارسال به لیست مسئولین وام
+            # سیستم اطلاع‌رسانی پیامکی
             if is_new:
                 phones = get_admin_phones('loan')
                 for phone in phones:
@@ -270,11 +303,14 @@ class LoanRequest(models.Model):
             if not is_new and old_status != self.status and self.status in [self.Status.APPROVED, self.Status.REJECTED]:
                 target_phone = self.user.parent.phone_number if self.user.parent else self.user.phone_number
                 send_pattern_sms(target_phone, 'loan_result_user', {'token1': target_name})
+                
+                # کسر امتیاز در زمان تایید نهایی
                 if self.status == self.Status.APPROVED and self.points_cost > 0:
                     exists = PointLog.objects.filter(user=self.user, log_type=PointLog.Types.LOAN_USED, description__contains=f"وام {self.id}").exists()
                     if not exists:
                         PointLog.objects.create(user=self.user, points=-self.points_cost, log_type=PointLog.Types.LOAN_USED, description=f"استفاده برای وام {self.amount:,} تومانی (شناسه {self.id})")
-        except: pass
+        except: 
+            pass
 
 # --- مدل دوره‌های سود (ارتقا یافته به نسخه حرفه‌ای) ---
 class ProfitPeriod(models.Model):
