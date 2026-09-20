@@ -15,10 +15,12 @@ function Deposit() {
   const [preview, setPreview] = useState(null);
   const [selectedDate, setSelectedDate] = useState(new Date());
 
-  const [familyMembers, setFamilyMembers] = useState([]);
-  const [userName, setUserName] = useState(''); // نام کاربر برای نمایش در متن وقف‌نامه
+  const [userName, setUserName] = useState(''); 
   
-  // استیت‌های اختصاصی وقف‌نامه
+  // --- جراحی: استخراج هوشمند آیدی زیرمجموعه از آدرس مرورگر ---
+  const queryParams = new URLSearchParams(window.location.search);
+  const targetUserId = queryParams.get('user_id');
+  
   const [waqfIntent, setWaqfIntent] = useState('WAQF_GEN');
   const [waqfAccepted, setWaqfAccepted] = useState(false);
   
@@ -26,8 +28,7 @@ function Deposit() {
     amount: '',
     transaction_type: 'SHORT_TERM',
     description: '',
-    receipt_image: null,
-    target_user_id: '' 
+    receipt_image: null
   });
 
   const transactionTypes = [
@@ -41,25 +42,17 @@ function Deposit() {
     { value: 'BOOK', label: 'امور کتاب ' },
     { value: 'KHOMS_IMAM', label: 'سهم امام' },
     { value: 'KHOMS_SADAT', label: 'سهم سادات' },
-    { value: 'WAQF_FORM', label: '📜 وقف ماندگار ' }, // این گزینه فرم جدید را باز می‌کند
+    { value: 'WAQF_FORM', label: '📜 وقف ماندگار ' }, 
   ];
 
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (!token) return;
 
-    const fetchFamily = async () => {
-        try {
-            const res = await axios.get('/api/users/family/', { headers: { Authorization: `Token ${token}` } });
-            setFamilyMembers(res.data);
-        } catch (e) { console.error(e); }
-    };
-    
     const checkProfile = async () => {
         try {
             const res = await axios.get('/api/users/profile/', { headers: { Authorization: `Token ${token}` } });
             
-            // --- جراحی: سخت‌گیریِ منطقی. تا زمانی که اطلاعات حیاتی مالی تکمیل نباشد اجازه واریز نمی‌دهد ---
             if (!res.data.national_code || !res.data.card_number || !res.data.shaba_number) {
                 alert("⛔ کاربر گرامی، برای انجام امور مالی ابتدا باید پروفایل خود (کد ملی، شماره کارت و شماره شبا) را تکمیل کنید.");
                 navigate('/profile');
@@ -70,7 +63,6 @@ function Deposit() {
     };
 
     checkProfile();
-    fetchFamily();
   }, [navigate]);
 
   const handleChange = (e) => {
@@ -99,7 +91,6 @@ function Deposit() {
     setLoading(true);
     setMessage(null);
     
-    // اعتبارسنجی ویژه وقف‌نامه
     let actualTransactionType = formData.transaction_type;
     if (actualTransactionType === 'WAQF_FORM') {
         if (!waqfAccepted) {
@@ -112,7 +103,7 @@ function Deposit() {
             setLoading(false);
             return;
         }
-        actualTransactionType = waqfIntent; // ارسال نوعِ خاصِ وقف به بک‌اند
+        actualTransactionType = waqfIntent; 
     }
 
     const token = localStorage.getItem('token');
@@ -123,13 +114,20 @@ function Deposit() {
     dataToSend.append('transaction_type', actualTransactionType);
     dataToSend.append('date', finalDate);
     dataToSend.append('description', formData.description);
-    if (formData.target_user_id) dataToSend.append('target_user_id', formData.target_user_id);
+    
+    // --- جراحی: الحاق نامرئیِ آیدی زیرمجموعه در صورت وجود ---
+    if (targetUserId) {
+        dataToSend.append('target_user_id', targetUserId);
+    }
+    
     if (formData.receipt_image) dataToSend.append('receipt_image', formData.receipt_image);
 
     try {
       await axios.post('/api/accounting/transactions/', dataToSend, { headers: { 'Authorization': `Token ${token}` } });
       setMessage({ type: 'success', text: '✅ واریزی با موفقیت ثبت شد. اجرکم عند الله!' });
-      setTimeout(() => navigate('/dashboard', { replace: true }), 2000);
+      
+      // هدایت به داشبوردِ همان شخص (اصلی یا زیرمجموعه)
+      setTimeout(() => navigate(targetUserId ? `/dashboard?user_id=${targetUserId}` : '/dashboard', { replace: true }), 2000);
     } catch (error) {
       const errorMsg = error.response?.data?.receipt_image ? "لطفا تصویر فیش را انتخاب کنید." : "خطا در ثبت اطلاعات.";
       setMessage({ type: 'error', text: errorMsg });
@@ -144,8 +142,10 @@ function Deposit() {
   return (
     <Container maxWidth="sm" style={{ marginTop: '50px', marginBottom: '50px', fontFamily: 'Tahoma' }}>
       <Paper elevation={isWaqfMode ? 6 : 3} style={{ padding: '30px', border: isWaqfMode ? '1px solid #c5a059' : 'none' }}>
+        
+        {/* --- جراحی: تغییر تیتر بالای صفحه برای نشان دادن حساب مقصد --- */}
         <Typography variant="h5" gutterBottom align={isWaqfMode ? "center" : "right"} style={{ color: isWaqfMode ? '#5d4037' : 'inherit', fontWeight: 'bold' }}>
-            {isWaqfMode ? 'سند وقف ماندگار' : 'ثبت واریزی جدید'}
+            {isWaqfMode ? 'سند وقف ماندگار' : `ثبت واریزی جدید ${targetUserId ? '(زیرمجموعه)' : ''}`}
         </Typography>
         
         <Box component="form" noValidate autoComplete="off">
@@ -208,12 +208,7 @@ function Deposit() {
           ) : (
           /* ================= فرم واریز عادی ================= */
           <>
-            <TextField select label="واریز برای:" name="target_user_id" value={formData.target_user_id} onChange={handleChange} fullWidth margin="normal" helperText="اگر برای عضو خانواده واریز می‌کنید، نام او را انتخاب کنید.">
-                <MenuItem value=""><em>خودم (حساب اصلی)</em></MenuItem>
-                {familyMembers.map((member) => (
-                <MenuItem key={member.id} value={member.id}>{member.full_name} ({member.membership_code})</MenuItem>
-                ))}
-            </TextField>
+            {/* فیلد انتخاب کاربر به طور کامل حذف شد */}
 
             {formData.transaction_type === 'SHORT_TERM' && (<Alert severity="info" style={{ marginTop: '5px', marginBottom: '10px' }}><strong>کوتاه‌مدت:</strong> برداشت آزاد. سود علی‌الحساب: <strong>۲٪ ماهیانه</strong></Alert>)}
             {formData.transaction_type === 'LONG_TERM' && (<Alert severity="warning" style={{ marginTop: '5px', marginBottom: '10px' }}><strong>بلندمدت:</strong> قفل ۳ ماهه. سود علی‌الحساب: <strong>۳٪ ماهیانه</strong></Alert>)}
@@ -243,7 +238,7 @@ function Deposit() {
             <Button variant="contained" color={isWaqfMode ? "success" : "primary"} fullWidth onClick={handleSubmit} disabled={loading} style={{ padding: '10px', fontWeight: 'bold' }}>
                 {loading ? 'درحال ارسال...' : (isWaqfMode ? 'امضای وقف‌نامه و ثبت نهایی' : 'ثبت نهایی')}
             </Button>
-            <Button variant="outlined" color="inherit" fullWidth onClick={() => navigate('/dashboard')}>انصراف</Button>
+            <Button variant="outlined" color="inherit" fullWidth onClick={() => navigate(targetUserId ? `/dashboard?user_id=${targetUserId}` : '/dashboard')}>انصراف</Button>
           </div>
         </Box>
         {message && <Alert severity={message.type} style={{ marginTop: '20px' }}>{message.text}</Alert>}

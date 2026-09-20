@@ -2,10 +2,10 @@ from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.db.models import Sum
-from .models import add_jalali_months
 import datetime
 from decimal import Decimal
 from datetime import date
+
 from .models import (
     Transaction, 
     ProfitPeriod, 
@@ -14,7 +14,11 @@ from .models import (
     LoanRequest, 
     FundProfitAllocation,
     PointLog, 
-    PointTransferRequest
+    PointTransferRequest,
+    add_jalali_months,
+    ExternalInvestment, 
+    InvestmentTransaction,
+    LoanInstallment
 )
 
 from .serializers import (
@@ -22,9 +26,11 @@ from .serializers import (
     WithdrawalRequestSerializer, 
     LoanRequestSerializer, 
     PointTransferSerializer, 
-    PointLogSerializer
+    PointLogSerializer,
+    AdminLoanActionSerializer,
+    ExternalInvestmentSerializer, 
+    InvestmentTransactionSerializer
 )
-
 from users.models import User
 
 # --- تعریف لیست‌های کمکی ---
@@ -127,11 +133,9 @@ class CalculateProfitView(APIView):
             return max(0, deposit - withdrawal)
 
         for member in members:
-            has_paid_fee = Transaction.objects.filter(
-                user=member, 
-                transaction_type=Transaction.Types.MEMBERSHIP_FEE, 
-                is_verified=True
-            ).exists()
+            fee_dep = Transaction.objects.filter(user=member, transaction_type=Transaction.Types.MEMBERSHIP_FEE, is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
+            fee_wit = Transaction.objects.filter(user=member, transaction_type='W_FEE', is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
+            has_paid_fee = (fee_dep - fee_wit) > 0
 
             # --- تغییر مهم: حساب‌های فرهنگی نیازی به حق عضویت ندارند و سود می‌گیرند ---
             if not has_paid_fee and member.role != 'CULTURAL':
@@ -232,7 +236,6 @@ class CalculateProfitView(APIView):
         return Response({"status": "OK"})
 
 
-# --- بخش سوم: داشبورد کاربر ---
 class UserDashboardView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -251,104 +254,101 @@ class UserDashboardView(APIView):
         def get_sum(queryset):
             return queryset.aggregate(Sum('amount'))['amount__sum'] or 0
 
-        loan_deposits = Transaction.objects.filter(user=user, transaction_type=Transaction.Types.LOAN_SAVING, is_verified=True).order_by('effective_date')
-        loan_withdrawals = Transaction.objects.filter(user=user, transaction_type='W_SAVING', is_verified=True)
-        
+        # بررسی وضعیت فعالیت کاربر (پرداخت حق عضویت)
+        fee_dep = get_sum(Transaction.objects.filter(user=user, transaction_type=Transaction.Types.MEMBERSHIP_FEE, is_verified=True))
+        fee_wit = get_sum(Transaction.objects.filter(user=user, transaction_type='W_FEE', is_verified=True))
+        has_paid_fee = (fee_dep - fee_wit) > 0
+        is_user_active = has_paid_fee or user.role == 'CULTURAL'
+
+        # --- محاسبه دقیق امتیازات (اگر کاربر غیرفعال باشد، امتیاز پس‌انداز وام صفر می‌شود) ---
+        loan_saving_points = 0
+        locked_saving_points = 0
         total_loan_points = 0
-        for t in loan_deposits:
-            days_active = (today - t.effective_date).days
-            if days_active > 0:
-                total_loan_points += int((t.amount / 1000000) * 7000 * days_active)
-                
-        for w in loan_withdrawals:
-            days_active = (today - w.effective_date).days
-            if days_active > 0:
-                total_loan_points -= int((w.amount / 1000000) * 7000 * days_active)
-                
-        loan_saving_points = 0    
-        locked_saving_points = 0  
         first_deposit_date = None
         days_passed_since_start = 0
         days_remaining_to_unlock = 0
         is_eligible_for_loan = False
-        
-        if loan_deposits.exists():
-            first_deposit_date = loan_deposits.first().effective_date
-            days_passed_since_start = (today - first_deposit_date).days
+
+        loan_deposits = Transaction.objects.filter(user=user, transaction_type=Transaction.Types.LOAN_SAVING, is_verified=True).order_by('effective_date')
+        loan_withdrawals = Transaction.objects.filter(user=user, transaction_type='W_SAVING', is_verified=True)
+
+        if is_user_active:
+            for t in loan_deposits:
+                days_active = (today - t.effective_date).days
+                if days_active > 0:
+                    total_loan_points += int((t.amount / 1000000) * 7000 * days_active)
+                    
+            for w in loan_withdrawals:
+                days_active = (today - w.effective_date).days
+                if days_active > 0:
+                    total_loan_points -= int((w.amount / 1000000) * 7000 * days_active)
+                
+            if loan_deposits.exists():
+                first_deposit_date = loan_deposits.first().effective_date
+                days_passed_since_start = (today - first_deposit_date).days
+                if days_passed_since_start >= 90:
+                    is_eligible_for_loan = True
+                    loan_saving_points = max(0, total_loan_points)
+                else:
+                    locked_saving_points = max(0, total_loan_points)
+                    days_remaining_to_unlock = 90 - days_passed_since_start
+
+        # امتیاز صدقات و معرفی (اگر کاربر فعال باشد)
+        donation_points = 0
+        referral_loan_points = 0
+        if is_user_active:
+            donation_total = get_sum(Transaction.objects.filter(user=user, transaction_type='SADAQAH', is_verified=True))
+            donation_points = int(donation_total * 0.20)
             
-            if days_passed_since_start >= 90:
-                is_eligible_for_loan = True
-                loan_saving_points = max(0, total_loan_points)
-            else:
-                locked_saving_points = max(0, total_loan_points)
-                days_remaining_to_unlock = 90 - days_passed_since_start
+            active_referrals_count = Transaction.objects.filter(
+                user__referral_code=user.membership_code,
+                transaction_type=Transaction.Types.MEMBERSHIP_FEE,
+                is_verified=True
+            ).values('user').distinct().count()
+            referral_loan_points = (active_referrals_count // 5) * 1000000
 
-        # اصلاح ارجاع به صدقه برای محاسبه امتیاز
-        donation_total = get_sum(Transaction.objects.filter(
-            user=user, transaction_type='SADAQAH', is_verified=True
-        ))
-        donation_points = int(donation_total * 0.20)
-        
-        active_referrals_count = Transaction.objects.filter(
-            user__referral_code=user.membership_code,
-            transaction_type=Transaction.Types.MEMBERSHIP_FEE,
-            is_verified=True
-        ).values('user').distinct().count()
-
-        referral_loan_points = (active_referrals_count // 5) * 1000000
         manual_points = PointLog.objects.filter(user=user).aggregate(Sum('points'))['points__sum'] or 0
-
         total_unlocked_limit = (donation_points + loan_saving_points + referral_loan_points) + manual_points
-        
-        is_eligible_for_loan = False
-        days_remaining_to_unlock = 0
-        if days_passed_since_start >= 90:
-             is_eligible_for_loan = True
-        else:
-             days_remaining_to_unlock = 90 - days_passed_since_start
 
-        # موجودی کل (اصلاح مهم: اضافه شدن حساب‌های فرهنگی به لیست واریزی‌های مجاز)
-        user_deposit_types = [
-            Transaction.Types.MONTHLY_DEPOSIT, Transaction.Types.PROFIT_SAVING,
-            Transaction.Types.LOAN_SAVING, Transaction.Types.QARD_HASAN,
-            Transaction.Types.MEMBERSHIP_FEE,
-            'SHORT_TERM', 'LONG_TERM', 'MANUAL_PROFIT',
-            'SADAQAH', 'WAQF', 'SACRIFICE', 'BOOK', 'KHOMS_IMAM', 'KHOMS_SADAT','WAQF_GEN', 'WAQF_BOOK', 'WAQF_MEDIA', 'WAQF_INFRA' # <--- این موارد اضافه شد
-        ]
-        user_deposits = get_sum(Transaction.objects.filter(
-            user=user, transaction_type__in=user_deposit_types, is_verified=True
-        ))
-        
-        user_withdrawals = get_sum(Transaction.objects.filter(
-            user=user, transaction_type__in=ALL_WITHDRAWAL_TYPES, is_verified=True
-        ))
+        # --- محاسبه تفکیک‌شده‌ی موجودی انواع حساب‌ها برای راهنمایی در زمان برداشت ---
+        st_bal = get_sum(Transaction.objects.filter(user=user, transaction_type='SHORT_TERM', is_verified=True)) - get_sum(Transaction.objects.filter(user=user, transaction_type='W_SHORT', is_verified=True))
+        lt_bal = get_sum(Transaction.objects.filter(user=user, transaction_type__in=['LONG_TERM', 'MONTHLY', 'PROFIT_SAVING'], is_verified=True)) - get_sum(Transaction.objects.filter(user=user, transaction_type__in=['W_LONG', 'W_MONTHLY', 'W_PROFIT'], is_verified=True))
+        loan_bal = get_sum(Transaction.objects.filter(user=user, transaction_type='LOAN_SAVING', is_verified=True)) - get_sum(Transaction.objects.filter(user=user, transaction_type='W_SAVING', is_verified=True))
+        qard_bal = get_sum(Transaction.objects.filter(user=user, transaction_type='QARD', is_verified=True)) - get_sum(Transaction.objects.filter(user=user, transaction_type='W_QRD', is_verified=True))
+        fee_bal = fee_dep - fee_wit
 
-        current_balance = user_deposits - user_withdrawals
-
-        # محاسبه سود دریافتی (سیستمی + دستی)
+        # سود دریافتی و قابل برداشت
         auto_profit = ProfitDistribution.objects.filter(user=user).aggregate(Sum('profit_amount'))['profit_amount__sum'] or 0
         manual_profit = get_sum(Transaction.objects.filter(user=user, transaction_type='MANUAL_PROFIT', is_verified=True))
-        total_profit_received = auto_profit + manual_profit 
+        profit_withdrawn = get_sum(Transaction.objects.filter(user=user, transaction_type='W_MAN_PROFIT', is_verified=True))
+        
+        total_profit_credited = auto_profit + manual_profit
+        net_profit_available = max(0, total_profit_credited - profit_withdrawn)
 
-        # بررسی وضعیت فعالیت (معافیت حساب‌های فرهنگی از حق عضویت)
-        has_paid_fee = Transaction.objects.filter(
-            user=user, transaction_type=Transaction.Types.MEMBERSHIP_FEE, is_verified=True
-        ).exists()
-
-        # --- اضافه شدن شرط معافیت برای نقش‌های فرهنگی ---
-        is_user_active = has_paid_fee or user.role == 'CULTURAL'
+        user_deposits = st_bal + lt_bal + loan_bal + qard_bal + fee_bal + total_profit_credited
+        user_withdrawals = get_sum(Transaction.objects.filter(user=user, transaction_type__in=ALL_WITHDRAWAL_TYPES, is_verified=True))
+        current_balance = max(0, user_deposits - user_withdrawals)
 
         return Response({
             "full_name": user.full_name if user.full_name else user.phone_number,
             "membership_code": user.membership_code,
             "role": user.role,
             "can_manage_loans": user.can_manage_loans,
-            "can_manage_investments": getattr(user, 'can_manage_investments', False), # <--- این خط اضافه شد
+            "can_manage_investments": getattr(user, 'can_manage_investments', False),
             "current_balance": current_balance,
-            "total_profit_received": total_profit_received,
+            "total_profit_received": net_profit_available, # سود باقی‌مانده قابل برداشت
+            "total_profit_credited": total_profit_credited, # کل سود تاریخچه
+            "profit_withdrawn": profit_withdrawn,
+            "balances": {
+                "short_term": max(0, st_bal),
+                "long_term": max(0, lt_bal),
+                "loan_saving": max(0, loan_bal),
+                "qard": max(0, qard_bal),
+                "fee": max(0, fee_bal)
+            },
             "status": "فعال" if is_user_active else "غیرفعال",
             "is_active": is_user_active,
-            "referrals_count": active_referrals_count,
+            "referrals_count": active_referrals_count if 'active_referrals_count' in locals() else 0,
             "loan_points_details": {
                 "total_limit": total_unlocked_limit + locked_saving_points,
                 "locked_limit": locked_saving_points,
@@ -364,8 +364,8 @@ class UserDashboardView(APIView):
             }
         })
 
-
 # --- بخش چهارم: گزارش مدیریتی (اصلاح شده برای نمایش سود حساب‌های فرهنگی) ---
+# --- بخش چهارم: گزارش مدیریتی (ترازنامه دقیق با محاسبه مقادیر خالص) ---
 class GeneralReportView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -379,18 +379,36 @@ class GeneralReportView(APIView):
         inactive_members_count = 0
 
         for member in all_members:
-            has_paid_fee = Transaction.objects.filter(
-                user=member, transaction_type=Transaction.Types.MEMBERSHIP_FEE, is_verified=True
-            ).exists()
+            fee_dep = Transaction.objects.filter(user=member, transaction_type=Transaction.Types.MEMBERSHIP_FEE, is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
+            fee_wit = Transaction.objects.filter(user=member, transaction_type='W_FEE', is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
+            has_paid_fee = (fee_dep - fee_wit) > 0
             
             if member.is_active and (has_paid_fee or member.role == 'CULTURAL'): 
                 active_members_count += 1
             else: 
                 inactive_members_count += 1
         
-        def get_total(t_type):
-            return Transaction.objects.filter(transaction_type=t_type, is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
+        # --- تابع جادویی: محاسبه موجودی خالصِ هر دسته (واریزی‌ها منهای برداشت‌ها) ---
+        def get_net_category(dep_types, wit_types):
+            deps = Transaction.objects.filter(transaction_type__in=dep_types, is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
+            wits = Transaction.objects.filter(transaction_type__in=wit_types, is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
+            return deps - wits
 
+        # ۱. خالص پس‌اندازهای سودده
+        prof_deps = ['SHORT_TERM', 'LONG_TERM', 'MONTHLY_DEPOSIT', 'PROFIT_SAVING', 'MANUAL_PROFIT']
+        prof_wits = ['W_SHORT', 'W_LONG', 'W_MONTHLY', 'W_PROFIT', 'W_MAN_PROFIT', 'WITHDRAWAL_OTHER', 'WITHDRAWAL']
+        net_profit_saving = get_net_category(prof_deps, prof_wits)
+
+        # ۲. خالص پس‌انداز وام
+        net_loan_saving = get_net_category(['LOAN_SAVING'], ['W_SAVING'])
+
+        # ۳. خالص قرض‌الحسنه
+        net_qard = get_net_category(['QARD_HASAN'], ['W_QARD'])
+        
+        # ۴. خالص حق عضویت‌های پرداخت شده
+        net_fee = get_net_category(['FEE'], ['W_FEE'])
+
+        # ۵. خالص حساب‌های فرهنگی
         def get_cultural_balance(t_type, fa_name):
             try:
                 cultural_user = User.objects.get(role='CULTURAL', full_name=f"حساب {fa_name}")
@@ -408,68 +426,53 @@ class GeneralReportView(APIView):
             except User.DoesNotExist:
                 return 0
 
-        total_monthly_deposit = get_total(Transaction.Types.MONTHLY_DEPOSIT)
-        total_profit_saving = get_total(Transaction.Types.PROFIT_SAVING)
-        total_short_term = get_total('SHORT_TERM')
-        total_long_term = get_total('LONG_TERM')
-        total_manual_profit = get_total('MANUAL_PROFIT') 
+        c_sadaqah = get_cultural_balance('SADAQAH', 'صدقه')
+        c_sacrifice = get_cultural_balance('SACRIFICE', 'قربانی')
+        c_book = get_cultural_balance('BOOK', 'کتاب')
+        c_imam = get_cultural_balance('KHOMS_IMAM', 'سهم امام')
+        c_sadat = get_cultural_balance('KHOMS_SADAT', 'سهم سادات')
+        c_waqf = get_cultural_balance('WAQF', 'وقف (قدیم)')
+        c_waqf_gen = get_cultural_balance('WAQF_GEN', 'وقف عام')
+        c_waqf_book = get_cultural_balance('WAQF_BOOK', 'وقف خاص کتاب')
+        c_waqf_media = get_cultural_balance('WAQF_MEDIA', 'وقف خاص تولید محتوا')
+        c_waqf_infra = get_cultural_balance('WAQF_INFRA', 'وقف خاص زیرساخت')
         
-        # --- جراحی: محاسبه خالص پس‌انداز وام و قرض‌الحسنه با کسر برداشت‌ها ---
-        raw_loan_saving = get_total(Transaction.Types.LOAN_SAVING)
-        loan_withdrawals = get_total('W_SAVING')
-        net_loan_saving = raw_loan_saving - loan_withdrawals
+        total_cultural = (c_sadaqah + c_sacrifice + c_book + c_imam + c_sadat + 
+                          c_waqf + c_waqf_gen + c_waqf_book + c_waqf_media + c_waqf_infra)
 
-        raw_qard = get_total(Transaction.Types.QARD_HASAN)
-        qard_withdrawals = get_total('W_QARD')
-        net_qard = raw_qard - qard_withdrawals
-        # ---------------------------------------------------------------
-
-        total_fee = get_total(Transaction.Types.MEMBERSHIP_FEE)
-        total_sadaqah_raw = get_total('SADAQAH')
-        total_sacrifice_raw = get_total('SACRIFICE')
-        total_book_raw = get_total('BOOK')
-        total_khoms_imam_raw = get_total('KHOMS_IMAM')
-        total_khoms_sadat_raw = get_total('KHOMS_SADAT')
-        total_waqf_raw = get_total('WAQF')
-        total_waqf_gen = get_total('WAQF_GEN')
-        total_waqf_book = get_total('WAQF_BOOK')
-        total_waqf_media = get_total('WAQF_MEDIA')
-        total_waqf_infra = get_total('WAQF_INFRA')
+        # --- ۶. فرمول قطعی موجودی کل صندوق (جمع تمام مقادیرِ خالص) ---
+        total_capital = net_profit_saving + net_loan_saving + net_qard + net_fee + total_cultural
         
         total_withdrawal = Transaction.objects.filter(
             transaction_type__in=ALL_WITHDRAWAL_TYPES,
             is_verified=True
         ).aggregate(Sum('amount'))['amount__sum'] or 0
-
-        # محاسبه کل سرمایه (فرمول بدون تغییر می‌ماند چون مجموع برداشت‌ها در انتها کسر می‌شود)
-        total_capital = (total_monthly_deposit + total_profit_saving + total_short_term + total_long_term + total_manual_profit + 
-                         raw_loan_saving + raw_qard + total_fee + 
-                         total_sadaqah_raw + total_sacrifice_raw + 
-                         total_book_raw + total_khoms_imam_raw + total_khoms_sadat_raw + total_waqf_raw + 
-                         total_waqf_gen + total_waqf_book + total_waqf_media + total_waqf_infra) - total_withdrawal
         
         total_commitments = User.objects.aggregate(Sum('monthly_commitment'))['monthly_commitment__sum'] or 0
+
+       # تفکیک دقیق کوتاه‌مدت و بلندمدت
+        net_short_term = get_net_category(['SHORT_TERM'], ['W_SHORT'])
+        net_long_term = get_net_category(['LONG_TERM', 'MONTHLY', 'PROFIT_SAVING', 'MANUAL_PROFIT'], ['W_LONG', 'W_MONTHLY', 'W_PROFIT', 'W_MAN_PROFIT', 'WITHDRAWAL_OTHER', 'WITHDRAWAL', 'W_CULTURAL'])
 
         return Response({
             "total_members": total_members_count,
             "active_members": active_members_count,
             "inactive_members": inactive_members_count,
             "total_capital": total_capital,
-            "total_qard": net_qard, # نمایش خالص قرض‌الحسنه
-            "total_profit_saving": total_profit_saving + total_short_term + total_long_term + total_manual_profit,
-            "total_loan_saving": net_loan_saving, # نمایش خالص پس‌انداز وام (هماهنگ با پنل وام)
-            "total_commitments": total_commitments,
-            "total_withdrawal": total_withdrawal,
-            "total_donation": get_cultural_balance('SADAQAH', 'صدقه'),
-            "total_sacrifice": get_cultural_balance('SACRIFICE', 'قربانی'),
-            "total_book": get_cultural_balance('BOOK', 'کتاب'),
-            "total_khoms_imam": get_cultural_balance('KHOMS_IMAM', 'سهم امام'),
-            "total_khoms_sadat": get_cultural_balance('KHOMS_SADAT', 'سهم سادات'),
-            "total_waqf": get_cultural_balance('WAQF', 'وقف (قدیم)'),
-            "total_waqf_gen": get_cultural_balance('WAQF_GEN', 'وقف عام'),
-            "total_waqf_book": get_cultural_balance('WAQF_BOOK', 'وقف خاص کتاب'),
-            "total_waqf_media": get_cultural_balance('WAQF_MEDIA', 'وقف خاص تولید محتوا'),
-            "total_waqf_infra": get_cultural_balance('WAQF_INFRA', 'وقف خاص زیرساخت'),
+            "total_qard": net_qard,
+            "total_short_term": net_short_term, # تفکیک شده
+            "total_long_term": net_long_term,   # تفکیک شده
+            "total_loan_saving": net_loan_saving,
+            "total_donation": c_sadaqah,
+            "total_sacrifice": c_sacrifice,
+            "total_book": c_book,
+            "total_khoms_imam": c_imam,
+            "total_khoms_sadat": c_sadat,
+            "total_waqf": c_waqf,
+            "total_waqf_gen": c_waqf_gen,
+            "total_waqf_book": c_waqf_book,
+            "total_waqf_media": c_waqf_media,
+            "total_waqf_infra": c_waqf_infra,
         })
 # --- بخش پنجم: درخواست برداشت ---
 class WithdrawalRequestListCreateView(generics.ListCreateAPIView):
@@ -613,65 +616,43 @@ class PointTransferView(APIView):
             return Response({"message": "✅ انتقال امتیاز با موفقیت انجام شد."})
         
         return Response(serializer.errors, status=400)
-# --- فاز ۴: API داشبورد اختصاصی مدیریت وام ---
 class LoanDashboardReportView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        # بررسی دسترسی: فقط ادمین و ناظر حق دیدن این پنل را دارند
         if request.user.role not in ['ADMIN', 'OBSERVER'] and not request.user.can_manage_loans:
             return Response({"error": "شما دسترسی ندارید."}, status=403)
         
-        today = date.today()
-
-        # ۱. محاسبه کل پس‌انداز وام (ورودی‌ها منهای خروجی‌ها)
+        # ۱. کل پس‌انداز وام (ورودی‌ها منهای خروجی‌ها)
         deposits = Transaction.objects.filter(transaction_type='LOAN_SAVING', is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
         withdrawals = Transaction.objects.filter(transaction_type='W_SAVING', is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
         total_loan_saving = deposits - withdrawals
 
-        # ۲. محاسبه کل سودهای تخصیص‌یافته به وام (از سرمایه‌گذاری‌های خارج صندوق)
+        # ۲. کل سودهای تخصیص‌یافته به وام
         total_allocated_profit = FundProfitAllocation.objects.aggregate(Sum('loan_saving_share'))['loan_saving_share__sum'] or 0
 
         # ۳. ظرفیت پایه وام‌دهی (۵۰٪ اصل پول + ۱۰۰٪ سودها)
         base_capacity = int((total_loan_saving * 0.5) + total_allocated_profit)
 
-        # ۴. محاسبه اقساط مجازی برگشتی و وام‌های درگیر
+        # ۴. محاسبه دقیق بر اساس اقساط واقعی پرداخت‌شده در جدول LoanInstallment
         approved_loans = LoanRequest.objects.filter(status='APPROVED', granted_date__isnull=False)
         
         total_paid_loans = 0
-        total_virtual_returned = 0
+        total_actual_returned = 0
 
         for loan in approved_loans:
             total_paid_loans += loan.amount
             
-            # --- فرمول جدید و دقیق بر اساس روزهای واقعی گذشته ---
-            days_passed = (today - loan.granted_date).days
-            
-            # جلوگیری از خطای روزهای منفی (برای وام‌هایی که در آینده ثبت شده‌اند)
-            if days_passed < 0:
-                months_passed = 0
-            else:
-                # هر ۳۰ روز کامل، یک قسط (یک ماه) محاسبه می‌شود
-                months_passed = days_passed // 30
-                
-            # جلوگیری از خطای تقسیم بر صفر و چک کردن سقف اقساط
-            if loan.duration_months and loan.duration_months > 0:
-                # اگر از مدت وام گذشته باشد، یعنی وام کاملاً تسویه شده است
-                if months_passed > loan.duration_months:
-                    months_passed = loan.duration_months
-                    
-                # محاسبه مبلغی که تا الان برگشته است (اقساط پرداخت شده)
-                monthly_installment = loan.amount / loan.duration_months
-                returned_amount = monthly_installment * months_passed
-                
-                total_virtual_returned += returned_amount
+            # جمع کل مبالغ اقساطی که برای این وام تیکِ پرداخت (is_paid=True) خورده‌اند
+            paid_installments_sum = loan.installments.filter(is_paid=True).aggregate(Sum('amount'))['amount__sum'] or 0
+            total_actual_returned += paid_installments_sum
 
-        total_virtual_returned = int(total_virtual_returned)
+        total_actual_returned = int(total_actual_returned)
         
-        # ۵. سرمایه درگیر فعلی (وام‌هایی که هنوز قسطشان تمام نشده)
-        active_debt = total_paid_loans - total_virtual_returned
+        # ۵. سرمایه درگیر فعلی (وام‌هایی که هنوز قسط‌شان پرداخت نشده است)
+        active_debt = total_paid_loans - total_actual_returned
         
-        # ۶. ظرفیت آزاد برای وام دادنِ همین الان (می‌تواند منفی شود)
+        # ۶. ظرفیت آزاد برای وام دادنِ همین الان
         free_capacity = base_capacity - active_debt
 
         return Response({
@@ -679,13 +660,10 @@ class LoanDashboardReportView(APIView):
             "total_allocated_profit": total_allocated_profit,
             "base_capacity": base_capacity,
             "total_paid_loans": total_paid_loans,
-            "total_virtual_returned": total_virtual_returned,
+            "total_virtual_returned": total_actual_returned, # نام فیلد برای سازگاری با فرانت
             "active_debt": active_debt,
             "free_capacity": free_capacity
         })
-
-from .serializers import AdminLoanActionSerializer
-
 # --- فاز ۴: API مدیریت لیست وام‌ها برای مدیر ---
 class AdminLoanManagementView(generics.ListCreateAPIView):
     serializer_class = AdminLoanActionSerializer

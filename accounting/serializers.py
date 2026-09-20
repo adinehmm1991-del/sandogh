@@ -133,6 +133,9 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
                 'WAQF_GEN', 'WAQF_BOOK', 'WAQF_MEDIA', 'WAQF_INFRA' # <--- این ۴ مورد اضافه شد
             ]
             related_withdrawal_types = ['W_CULTURAL']
+        elif source_type == 'FEE':
+            related_deposit_types = [Transaction.Types.MEMBERSHIP_FEE]
+            related_withdrawal_types = [Transaction.Types.WITHDRAWAL_FEE]
 
         total_deposited = Transaction.objects.filter(
             user=user_to_check, transaction_type__in=related_deposit_types, is_verified=True

@@ -64,6 +64,47 @@ class TransactionAdminForm(forms.ModelForm):
             return int(val)
         except ValueError:
             raise forms.ValidationError("مبلغ وارد شده نامعتبر است. لطفاً فقط از اعداد استفاده کنید.")
+# --- فرم اختصاصی برای وارد کردن مبلغ سود با کاما ---
+class ProfitPeriodAdminForm(forms.ModelForm):
+    total_profit_amount = forms.CharField(
+        label="مبلغ کل سود تولید شده در این دوره (تومان)",
+        widget=forms.TextInput(attrs={
+            'class': 'vTextField', 
+            'dir': 'ltr',
+            'inputmode': 'numeric',
+            'placeholder': 'مثال: 50,000,000',
+            'oninput': """
+                let value = this.value.replace(/\\D/g, '');
+                if (value) {
+                    let cursor = this.selectionStart;
+                    let oldLen = this.value.length;
+                    this.value = Number(value).toLocaleString('en-US');
+                    let newLen = this.value.length;
+                    this.setSelectionRange(cursor + (newLen - oldLen), cursor + (newLen - oldLen));
+                } else {
+                    this.value = '';
+                }
+            """
+        })
+    )
+
+    class Meta:
+        model = ProfitPeriod
+        fields = '__all__'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk and self.instance.total_profit_amount:
+            self.initial['total_profit_amount'] = f"{self.instance.total_profit_amount:,}"
+
+    def clean_total_profit_amount(self):
+        val = self.cleaned_data.get('total_profit_amount', '')
+        persian_digits = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
+        val = str(val).translate(persian_digits).replace(',', '').strip()
+        try:
+            return int(val)
+        except ValueError:
+            return 0
 
 # --- تنظیمات خروجی اکسل ---
 class TransactionResource(resources.ModelResource):
@@ -112,49 +153,209 @@ class TransactionAdmin(ModelAdminJalaliMixin, ImportExportModelAdmin):
 
 @admin.register(ProfitPeriod)
 class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
+    form = ProfitPeriodAdminForm
     list_display = ('name', 'start_date', 'end_date', 'total_profit_display', 'is_calculated')
-    actions = ['export_paid_profits_report', 'distribute_yearly_profit']
-    
-    @admin.display(description='مبلغ کل سود سالیانه (ثبت شده)')
+    actions = ['preview_period_profit_excel', 'distribute_period_profit']
+    filter_horizontal = ('included_months',) 
+
+    @admin.display(description='مبلغ کل سود')
     def total_profit_display(self, obj): return f"{obj.total_profit_amount:,} تومان"
 
-    @admin.action(description='📊 ۱. گزارش جمع سودهای علی‌الحساب پرداختی در این دوره (اکسل)')
-    def export_paid_profits_report(self, request, queryset):
+    def _get_period_calculation(self, period):
+        """ موتور مرکزی محاسبه سود دوره‌ای با تفکیک کامل کوتاه‌مدت و بلندمدت """
+        total_profit = period.total_profit_amount
+        start_date_g = period.start_date
+        end_date_g = period.end_date
+        days_in_period = (end_date_g - start_date_g).days + 1
+
+        users = User.objects.exclude(role='FUND_ACCOUNT')
+        
+        # دسته‌بندی حساب‌ها
+        st_types = ['SHORT_TERM']
+        st_wit = ['W_SHORT']
+        lt_types = ['LONG_TERM', 'MONTHLY', 'PROFIT_SAVING', 'MANUAL_PROFIT', 'SADAQAH', 'WAQF', 'SACRIFICE', 'BOOK', 'KHOMS_IMAM', 'KHOMS_SADAT', 'WAQF_GEN', 'WAQF_BOOK', 'WAQF_MEDIA', 'WAQF_INFRA']
+        lt_wit = ['W_LONG', 'W_MONTHLY', 'W_PROFIT', 'W_MAN_PROFIT', 'WITHDRAWAL_OTHER', 'WITHDRAWAL', 'W_CULTURAL']
+        loan_types = ['LOAN_SAVING']
+        loan_wit = ['W_SAVING']
+        qard_fee_types = ['QARD', 'FEE']
+        qard_fee_wit = ['W_QARD', 'W_FEE']
+
+        # ۱. استخراج مبالغ علی‌الحساب
+        ali_hesab_descriptions = []
+        for rate in period.included_months.all():
+            j_date = jdatetime.date.fromgregorian(date=rate.month_year)
+            month_name = j_date.strftime("%B %Y")
+            ali_hesab_descriptions.append(f"سود علی‌الحساب روزشمار {month_name}")
+
+        user_data = []
+        total_st_points = 0
+        total_lt_points = 0
+        total_loan_points = 0
+        total_qard_fee_points = 0
+
+        # ۲. محاسبه دقیق امتیازات روزشمار (قدم اول منطق شما)
+        for user in users:
+            def get_pts(dep_types, wit_types):
+                dep_before = Transaction.objects.filter(user=user, transaction_type__in=dep_types, effective_date__lt=start_date_g, is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
+                wit_before = Transaction.objects.filter(user=user, transaction_type__in=wit_types, effective_date__lt=start_date_g, is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
+                current_bal = max(0, dep_before - wit_before)
+                pts = 0
+                trans = Transaction.objects.filter(user=user, transaction_type__in=dep_types+wit_types, effective_date__gte=start_date_g, effective_date__lte=end_date_g, is_verified=True).order_by('effective_date')
+                changes = {}
+                for t in trans:
+                    d = t.effective_date
+                    changes[d] = changes.get(d, 0) + (t.amount if t.transaction_type in dep_types else -t.amount)
+                for day_offset in range(days_in_period):
+                    curr_day = start_date_g + datetime.timedelta(days=day_offset)
+                    if curr_day in changes: current_bal = max(0, current_bal + changes[curr_day])
+                    # اختصاص امتیاز به ازای هر یک میلیون تومان در هر روز
+                    pts += (current_bal // 1000000) * 1000000
+                return pts
+
+            st_p = get_pts(st_types, st_wit)
+            lt_p = get_pts(lt_types, lt_wit)
+            loan_p = get_pts(loan_types, loan_wit)
+            qf_p = get_pts(qard_fee_types, qard_fee_wit)
+            
+            total_st_points += st_p
+            total_lt_points += lt_p
+            total_loan_points += loan_p
+            total_qard_fee_points += qf_p
+            
+            ali_hesab_paid = 0
+            if ali_hesab_descriptions:
+                ali_hesab_paid = Transaction.objects.filter(
+                    user=user, transaction_type='MANUAL_PROFIT', 
+                    description__in=ali_hesab_descriptions, is_verified=True
+                ).aggregate(Sum('amount'))['amount__sum'] or 0
+
+            user_data.append({
+                'user': user, 'st_p': st_p, 'lt_p': lt_p, 'loan_p': loan_p, 'qf_p': qf_p, 'ali_hesab': ali_hesab_paid
+            })
+
+        grand_total_points = total_st_points + total_lt_points + total_loan_points + total_qard_fee_points
+        profit_per_point = total_profit / grand_total_points if grand_total_points > 0 else 0
+
+        # ۳. توزیع و اعمال کسر صندوق، علی‌الحساب و تضمین‌ها (قدم دوم، سوم و چهارم)
+        results = []
+        fund_net_profit_saving = 0 
+        
+        # ۱۰۰٪ سود وام به پس‌انداز وام صندوق می‌رود
+        fund_net_loan_saving = int(total_loan_points * profit_per_point) 
+        # ۱۰۰٪ سود سایر حساب‌ها (حق عضویت و...) به سود صندوق می‌رود
+        fund_net_profit_saving += int(total_qard_fee_points * profit_per_point) 
+
+        f_share_st = float(period.fund_share_short_term) / 100.0
+        f_share_lt = float(period.fund_share_long_term) / 100.0
+        g_rate_st = float(period.guarantee_short_term) / 100.0
+        g_rate_lt = float(period.guarantee_long_term) / 100.0
+
+        for ud in user_data:
+            u = ud['user']
+            
+            # محاسبه سود ناخالص
+            gross_st = ud['st_p'] * profit_per_point
+            gross_lt = ud['lt_p'] * profit_per_point
+            
+            # کسر سهم صندوق (قدم دوم)
+            fund_cut_st = gross_st * f_share_st
+            fund_cut_lt = gross_lt * f_share_lt
+            
+            fund_net_profit_saving += (fund_cut_st + fund_cut_lt)
+            
+            user_net_st = gross_st - fund_cut_st
+            user_net_lt = gross_lt - fund_cut_lt
+            
+            # میانگین سرمایه برای محاسبه تضمین (قدم چهارم)
+            avg_cap_st = ud['st_p'] / days_in_period
+            avg_cap_lt = ud['lt_p'] / days_in_period
+            
+            min_req_st = avg_cap_st * g_rate_st
+            min_req_lt = avg_cap_lt * g_rate_lt
+            
+            boost_st = max(0, min_req_st - user_net_st)
+            boost_lt = max(0, min_req_lt - user_net_lt)
+            
+            # جبران از جیب صندوق به حساب کاربر
+            fund_net_profit_saving -= (boost_st + boost_lt)
+            user_net_st += boost_st
+            user_net_lt += boost_lt
+            
+            total_user_net = int(user_net_st + user_net_lt)
+            ali_hesab = ud['ali_hesab']
+            
+            # کسر علی‌الحساب از سود نهایی (قدم سوم)
+            final_payout = total_user_net - ali_hesab
+            if final_payout < 0: final_payout = 0 
+            
+            if total_user_net > 0 or ali_hesab > 0:
+                results.append({
+                    'user': u,
+                    'avg_st': int(avg_cap_st),
+                    'gross_st': int(gross_st),
+                    'fund_cut_st': int(fund_cut_st),
+                    'boost_st': int(boost_st),
+                    'net_st': int(user_net_st),
+                    
+                    'avg_lt': int(avg_cap_lt),
+                    'gross_lt': int(gross_lt),
+                    'fund_cut_lt': int(fund_cut_lt),
+                    'boost_lt': int(boost_lt),
+                    'net_lt': int(user_net_lt),
+                    
+                    'total_net': total_user_net,
+                    'ali_hesab': ali_hesab,
+                    'final_payout': final_payout
+                })
+
+        return results, int(fund_net_profit_saving), fund_net_loan_saving
+
+    @admin.action(description='📊 ۱. دریافت اکسل پیش‌نمایش (با جزئیات تفکیکی کامل)')
+    def preview_period_profit_excel(self, request, queryset):
         import csv
         from django.http import HttpResponse
 
         if queryset.count() != 1:
             self.message_user(request, "لطفاً فقط یک دوره را انتخاب کنید.", messages.ERROR)
             return
+
         period = queryset.first()
-        profits = Transaction.objects.filter(
-            transaction_type='MANUAL_PROFIT', effective_date__gte=period.start_date,
-            effective_date__lte=period.end_date, is_verified=True
-        ).exclude(description__contains='سالیانه') 
+        results, fund_profit, fund_loan = self._get_period_calculation(period)
 
         response = HttpResponse(content_type='text/csv')
-        response['Content-Disposition'] = f'attachment; filename="Paid_Profits_Report_{period.name}.csv"'
+        response['Content-Disposition'] = f'attachment; filename="Detailed_Profit_Preview_{period.name}.csv"'
         response.write('\ufeff'.encode('utf8')) 
         writer = csv.writer(response)
-        writer.writerow(['شرح / ماه', 'مبلغ پرداختی (تومان)'])
+        
+        # هدرهای بسیار دقیق و تفکیک شده
+        writer.writerow([
+            'ردیف', 'نام کاربر', 'کد عضویت', 
+            'میانگین سرمایه کوتاه‌مدت', 'سود ناخالص کوتاه‌مدت', 'سهم کسر شده صندوق (کوتاه‌مدت)', 'جبران تضمین (کوتاه‌مدت)', 'سود خالص کوتاه‌مدت',
+            'میانگین سرمایه بلندمدت', 'سود ناخالص بلندمدت', 'سهم کسر شده صندوق (بلندمدت)', 'جبران تضمین (بلندمدت)', 'سود خالص بلندمدت',
+            'جمع کل سود خالص شخص', 'علی‌الحساب پرداختی در دوره', 'مبلغ قابل واریز (قطعی)'
+        ])
 
-        monthly_totals = {}
-        grand_total = 0
-        for p in profits:
-            desc = p.description or "سودهای متفرقه"
-            if desc not in monthly_totals: monthly_totals[desc] = 0
-            monthly_totals[desc] += p.amount
-            grand_total += p.amount
+        tot_payout = 0
+        idx = 1
+        for r in results:
+            writer.writerow([
+                idx, r['user'].full_name, r['user'].membership_code, 
+                r['avg_st'], r['gross_st'], r['fund_cut_st'], r['boost_st'], r['net_st'],
+                r['avg_lt'], r['gross_lt'], r['fund_cut_lt'], r['boost_lt'], r['net_lt'],
+                r['total_net'], r['ali_hesab'], r['final_payout']
+            ])
+            tot_payout += r['final_payout']
+            idx += 1
 
-        for desc, amount in monthly_totals.items():
-            writer.writerow([desc, amount])
-
-        writer.writerow(['----------------', '------'])
-        writer.writerow(['جمع کل سودهای پرداخت شده', grand_total])
+        writer.writerow(['---'] * 16)
+        writer.writerow(['مجموع مبالغ واریزی به کاربران', '', '', '', '', '', '', '', '', '', '', '', '', '', '', tot_payout])
+        writer.writerow(['سهم اختصاصی صندوق (سود قطعی + رسوبات غیرمشمول)', '', '', '', '', '', '', '', '', '', '', '', '', '', '', fund_profit])
+        writer.writerow(['سهم تزریقی به پس‌انداز وام صندوق', '', '', '', '', '', '', '', '', '', '', '', '', '', '', fund_loan])
+        
         return response
 
-    @admin.action(description='🏆 ۲. تقسیم سود قطعی سالیانه (با دقت روزشمار در طول دوره)')
-    def distribute_yearly_profit(self, request, queryset):
+    @admin.action(description='🏆 ۲. تایید نهایی و واریز سود قطعی دوره به حساب‌ها')
+    def distribute_period_profit(self, request, queryset):
         if queryset.count() != 1:
             self.message_user(request, "لطفاً فقط یک دوره را انتخاب کنید.", messages.ERROR)
             return
@@ -164,115 +365,52 @@ class ProfitPeriodAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
             self.message_user(request, "خطا: سود این دوره قبلاً محاسبه و تقسیم شده است!", messages.ERROR)
             return
 
-        total_profit = period.total_profit_amount
-        if total_profit <= 0:
-            self.message_user(request, "خطا: مبلغ سود باقیمانده برای این دوره صفر است.", messages.ERROR)
-            return
-
-        users_share = int(total_profit * 0.80)
-        fund_share = int(total_profit * 0.20)
-
-        start_date_g = period.start_date
+        results, fund_profit, fund_loan = self._get_period_calculation(period)
         end_date_g = period.end_date
-        days_in_period = (end_date_g - start_date_g).days + 1
+        
+        transactions_to_create = []
+        total_distributed = 0
+        
+        for r in results:
+            if r['final_payout'] > 0:
+                transactions_to_create.append(Transaction(
+                    user=r['user'], amount=r['final_payout'], transaction_type='MANUAL_PROFIT',
+                    date=timezone.now(), effective_date=end_date_g, is_verified=True,
+                    description=f"سود قطعی دوره {period.name} (پس از کسر {r['ali_hesab']:,} تومان علی‌الحساب)", profit_period=period
+                ))
+                total_distributed += r['final_payout']
+                ProfitDistribution.objects.create(period=period, user=r['user'], calculated_score=0, profit_amount=r['final_payout'])
 
-        users = User.objects.exclude(role='FUND_ACCOUNT')
         fund_account = User.objects.filter(role='FUND_ACCOUNT').first()
+        if fund_account:
+            if fund_profit > 0:
+                transactions_to_create.append(Transaction(
+                    user=fund_account, amount=fund_profit, transaction_type='PROFIT_SAVING',
+                    date=timezone.now(), effective_date=end_date_g, is_verified=True,
+                    description=f"سهم قطعی و رسوبات صندوق از دوره {period.name}", profit_period=period
+                ))
+            if fund_loan > 0:
+                transactions_to_create.append(Transaction(
+                    user=fund_account, amount=fund_loan, transaction_type='LOAN_SAVING',
+                    date=timezone.now(), effective_date=end_date_g, is_verified=True,
+                    description=f"رسوب وام از سود دوره {period.name} (افزایش ظرفیت وام‌دهی)", profit_period=period
+                ))
+                FundProfitAllocation.objects.update_or_create(
+                    date=end_date_g,
+                    defaults={
+                        'total_profit': fund_profit + fund_loan,
+                        'loan_saving_share': fund_loan,
+                        'description': f"تخصیص از سود دوره {period.name}"
+                    }
+                )
 
-        st_dep_types = ['SHORT_TERM']
-        st_wit_types = ['W_SHORT']
-        lt_dep_types = ['LONG_TERM', 'MONTHLY', 'PROFIT_SAVING', 'MANUAL_PROFIT', 'SADAQAH', 'WAQF', 'SACRIFICE', 'BOOK', 'KHOMS_IMAM', 'KHOMS_SADAT']
-        lt_wit_types = ['W_LONG', 'W_MONTHLY', 'W_PROFIT', 'W_MAN_PROFIT', 'WITHDRAWAL_OTHER', 'WITHDRAWAL', 'W_CULTURAL']
-        non_dep_types = ['LOAN_SAVING', 'QARD', 'FEE']
-        non_wit_types = ['W_SAVING', 'W_QARD', 'W_FEE']
-
-        user_eligible_points = {}
-        total_eligible_points = 0
-        total_non_eligible_points = 0
-
-        for user in users:
-            def get_daily_points(dep_types, wit_types):
-                dep_before = Transaction.objects.filter(user=user, transaction_type__in=dep_types, effective_date__lt=start_date_g, is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
-                wit_before = Transaction.objects.filter(user=user, transaction_type__in=wit_types, effective_date__lt=start_date_g, is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
-                current_bal = max(0, dep_before - wit_before)
-                total_pts = 0
-                trans_this_period = Transaction.objects.filter(user=user, transaction_type__in=dep_types + wit_types, effective_date__gte=start_date_g, effective_date__lte=end_date_g, is_verified=True).order_by('effective_date')
-                daily_changes = {}
-                for t in trans_this_period:
-                    d = t.effective_date
-                    daily_changes[d] = daily_changes.get(d, 0) + (t.amount if t.transaction_type in dep_types else -t.amount)
-                for day_offset in range(days_in_period):
-                    current_day_g = start_date_g + datetime.timedelta(days=day_offset)
-                    if current_day_g in daily_changes:
-                        current_bal = max(0, current_bal + daily_changes[current_day_g])
-                    total_pts += (current_bal // 1000000) * 1000000
-                return total_pts
-
-            st_points = get_daily_points(st_dep_types, st_wit_types)
-            lt_points = get_daily_points(lt_dep_types, lt_wit_types)
-            non_points = get_daily_points(non_dep_types, non_wit_types)
-
-            eligible_pts = st_points + lt_points
-            if eligible_pts > 0:
-                user_eligible_points[user.id] = eligible_pts
-                total_eligible_points += eligible_pts
-            total_non_eligible_points += non_points
-
-        grand_total_points = total_eligible_points + total_non_eligible_points
-        distributed_to_users = 0
-
-        if grand_total_points > 0:
-            for uid, pts in user_eligible_points.items():
-                user_obj = User.objects.get(id=uid)
-                share = int((pts / grand_total_points) * users_share)
-                if share > 0:
-                    ProfitDistribution.objects.create(period=period, user=user_obj, calculated_score=pts, profit_amount=share)
-                    Transaction.objects.create(
-                        user=user_obj, amount=share, transaction_type='MANUAL_PROFIT',
-                        date=timezone.now(), effective_date=end_date_g, is_verified=True,
-                        description=f"سود قطعی سالیانه (دوره {period.name})", profit_period=period
-                    )
-                    distributed_to_users += share
-
-        final_fund_share = (users_share - distributed_to_users) + fund_share
-
-        if fund_account and final_fund_share > 0:
-            ProfitDistribution.objects.create(period=period, user=fund_account, calculated_score=total_non_eligible_points, profit_amount=final_fund_share)
-            Transaction.objects.create(
-                user=fund_account, amount=final_fund_share, transaction_type='MANUAL_PROFIT',
-                date=timezone.now(), effective_date=end_date_g, is_verified=True,
-                description=f"سهم ۲۰٪ + رسوب غیرمشمول‌ها از سود سالیانه (دوره {period.name})", profit_period=period
-            )
-            
-            # --- محاسبه هوشمند سهم وام در سود سالیانه ---
-            def get_balance(dep_types, wit_types):
-                dep = Transaction.objects.filter(effective_date__lte=end_date_g, transaction_type__in=dep_types, is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
-                wit = Transaction.objects.filter(effective_date__lte=end_date_g, transaction_type__in=wit_types, is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
-                return max(0, dep - wit)
-
-            loan_cap = get_balance(['LOAN_SAVING'], ['W_SAVING'])
-            qard_cap = get_balance(['QARD'], ['W_QARD'])
-            fee_cap = get_balance(['FEE'], ['W_FEE'])
-            total_cap = loan_cap + qard_cap + fee_cap
-            
-            loan_share = int((loan_cap / total_cap) * final_fund_share) if total_cap > 0 else 0
-            qard_share = int((qard_cap / total_cap) * final_fund_share) if total_cap > 0 else 0
-
-            FundProfitAllocation.objects.update_or_create(
-                date=end_date_g,
-                defaults={
-                    'total_profit': final_fund_share,
-                    'loan_saving_share': loan_share,
-                    'qard_share': qard_share,
-                    'short_term_share': 0, 'long_term_share': 0,
-                    'description': f"تخصیص از سود سالیانه دوره {period.name}"
-                }
-            )
+        if transactions_to_create:
+            Transaction.objects.bulk_create(transactions_to_create)
 
         period.is_calculated = True
         period.save()
-        self.message_user(request, f"✅ سود سالیانه محاسبه شد! (مبلغ {distributed_to_users:,} به کاربران و {final_fund_share:,} حق صندوق واریز شد)", messages.SUCCESS)
-
+        self.message_user(request, f"✅ سود قطعی دوره با موفقیت تقسیم شد! (کاربران: {total_distributed:,} | سود صندوق: {fund_profit:,} | پس‌انداز وام صندوق: {fund_loan:,})", messages.SUCCESS)
+        
 @admin.register(ProfitDistribution)
 class ProfitDistributionAdmin(admin.ModelAdmin):
     list_display = ('user', 'period', 'calculated_score', 'profit_amount_display')
@@ -370,17 +508,22 @@ class ProfitRateAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
 
         st_dep_types = ['SHORT_TERM']
         st_wit_types = ['W_SHORT']
-        # وقف‌های جا افتاده در کد قبلی اضافه شدند
         lt_dep_types = ['LONG_TERM', 'MONTHLY', 'PROFIT_SAVING', 'MANUAL_PROFIT', 'SADAQAH', 'WAQF', 'SACRIFICE', 'BOOK', 'KHOMS_IMAM', 'KHOMS_SADAT', 'WAQF_GEN', 'WAQF_BOOK', 'WAQF_MEDIA', 'WAQF_INFRA']
         lt_wit_types = ['W_LONG', 'W_MONTHLY', 'W_PROFIT', 'W_MAN_PROFIT', 'WITHDRAWAL_OTHER', 'WITHDRAWAL', 'W_CULTURAL']
-        non_dep_types = ['LOAN_SAVING', 'QARD', 'FEE']
-        non_wit_types = ['W_SAVING', 'W_QARD', 'W_FEE']
+        
+        # --- جراحی: تفکیک دقیق وام از سایر حساب‌های غیرمشمول ---
+        loan_dep_types = ['LOAN_SAVING']
+        loan_wit_types = ['W_SAVING']
+        qf_dep_types = ['QARD', 'FEE']
+        qf_wit_types = ['W_QARD', 'W_FEE']
 
         users = User.objects.all()
         results = []
 
         for user in users:
-            has_paid_fee = Transaction.objects.filter(user=user, transaction_type='FEE', is_verified=True).exists()
+            fee_dep = Transaction.objects.filter(user=user, transaction_type='FEE', is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
+            fee_wit = Transaction.objects.filter(user=user, transaction_type='W_FEE', is_verified=True).aggregate(Sum('amount'))['amount__sum'] or 0
+            has_paid_fee = (fee_dep - fee_wit) > 0
             is_eligible = has_paid_fee or user.role in ['CULTURAL', 'FUND_ACCOUNT']
 
             def get_points(dep_types, wit_types):
@@ -409,45 +552,46 @@ class ProfitRateAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
 
             st_exact, st_round = get_points(st_dep_types, st_wit_types)
             lt_exact, lt_round = get_points(lt_dep_types, lt_wit_types)
-            non_exact, non_round = get_points(non_dep_types, non_wit_types)
+            loan_exact, loan_round = get_points(loan_dep_types, loan_wit_types)
+            qf_exact, qf_round = get_points(qf_dep_types, qf_wit_types)
 
             user_st = 0
             user_lt = 0
-            fund_resub = 0
+            fund_resub_other = 0
+            fund_resub_loan = 0
 
             if user.role == 'FUND_ACCOUNT':
-                # سود دقیق حساب صندوق (از محل سرمایه‌های درگیر خودش) به جیب خودش می‌رود و رسوب محاسبه نمی‌شود
                 user_st = st_exact * daily_rate_short
-                user_lt = (lt_exact + non_exact) * daily_rate_long
+                user_lt = (lt_exact + qf_exact) * daily_rate_long
+                fund_resub_loan = loan_exact * daily_rate_long
             elif user.role == 'CULTURAL':
-                # حساب‌های فرهنگی سود دقیقشان را می‌گیرند
                 user_st = st_exact * daily_rate_short
-                user_lt = (lt_exact + non_exact) * daily_rate_long
+                user_lt = (lt_exact + qf_exact + loan_exact) * daily_rate_long
             else:
                 if is_eligible:
-                    # شخص عادی واجد شرایط: مضرب میلیون برای خودش، مابقی برای صندوق
                     user_st = st_round * daily_rate_short
                     user_lt = lt_round * daily_rate_long
-                    fund_resub += (st_exact - st_round) * daily_rate_short
-                    fund_resub += (lt_exact - lt_round) * daily_rate_long
+                    fund_resub_other += (st_exact - st_round) * daily_rate_short
+                    fund_resub_other += (lt_exact - lt_round) * daily_rate_long
                 else:
-                    # شخص فاقد شرایط: کل سودش برای صندوق رسوب می‌شود
-                    fund_resub += st_exact * daily_rate_short
-                    fund_resub += lt_exact * daily_rate_long
+                    fund_resub_other += st_exact * daily_rate_short
+                    fund_resub_other += lt_exact * daily_rate_long
                 
-                # برای اشخاص عادی، سود حساب‌های غیرشمول (وام، حق عضویت) تماماً رسوبِ صندوق است
-                fund_resub += non_exact * daily_rate_long
+                fund_resub_other += qf_exact * daily_rate_long
+                fund_resub_loan += loan_exact * daily_rate_long
 
             user_total = int(user_st) + int(user_lt)
-            fund_resub_int = int(fund_resub)
+            fund_resub_other_int = int(fund_resub_other)
+            fund_resub_loan_int = int(fund_resub_loan)
 
-            if user_total > 0 or fund_resub_int > 0:
+            if user_total > 0 or fund_resub_other_int > 0 or fund_resub_loan_int > 0:
                 results.append({
                     'user': user,
                     'user_st': int(user_st),
                     'user_lt': int(user_lt),
                     'user_total': user_total,
-                    'fund_resub': fund_resub_int
+                    'fund_resub_other': fund_resub_other_int,
+                    'fund_resub_loan': fund_resub_loan_int
                 })
 
         return results, end_date_g
@@ -472,12 +616,13 @@ class ProfitRateAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
         response.write('\ufeff'.encode('utf8')) 
         writer = csv.writer(response)
         
-        writer.writerow(['ردیف', 'نام و نقش', 'کد عضویت', 'سود کوتاه‌مدت شخص', 'سود بلندمدت شخص', 'جمع سود شخص', 'مبلغ رسوب شده برای صندوق (تومان)'])
+        writer.writerow(['ردیف', 'نام و نقش', 'کد عضویت', 'سود کوتاه‌مدت شخص', 'سود بلندمدت شخص', 'جمع سود شخص', 'مبلغ رسوب شده برای صندوق (سایر)', 'رسوب پس‌انداز وام صندوق'])
 
         total_st = 0
         total_lt = 0
         total_user = 0
-        total_fund_resub = 0
+        total_fund_resub_other = 0
+        total_fund_resub_loan = 0
         fund_own_profit = 0
 
         row_idx = 1
@@ -485,7 +630,7 @@ class ProfitRateAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
             u = r['user']
             u_total = r['user_total']
             
-            writer.writerow([row_idx, u.full_name, u.membership_code, r['user_st'], r['user_lt'], u_total, r['fund_resub']])
+            writer.writerow([row_idx, u.full_name, u.membership_code, r['user_st'], r['user_lt'], u_total, r['fund_resub_other'], r['fund_resub_loan']])
             row_idx += 1
 
             if u.role == 'FUND_ACCOUNT':
@@ -495,13 +640,14 @@ class ProfitRateAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
                 total_lt += r['user_lt']
                 total_user += u_total
             
-            total_fund_resub += r['fund_resub']
+            total_fund_resub_other += r['fund_resub_other']
+            total_fund_resub_loan += r['fund_resub_loan']
 
-        writer.writerow(['---', '---', '---', '---', '---', '---', '---'])
-        writer.writerow(['', 'جمع سودهای پرداختی به اعضا', '', total_st, total_lt, total_user, ''])
-        writer.writerow(['', 'سود اختصاصی خود حساب صندوق', '', '', '', fund_own_profit, ''])
-        writer.writerow(['', 'جمع مبالغ رسوب شده از اعضا', '', '', '', '', total_fund_resub])
-        writer.writerow(['', 'مجموع کل سهم صندوق (خودش + رسوبات)', '', '', '', fund_own_profit + total_fund_resub, ''])
+        writer.writerow(['---', '---', '---', '---', '---', '---', '---', '---'])
+        writer.writerow(['', 'جمع سودهای پرداختی به اعضا', '', total_st, total_lt, total_user, '', ''])
+        writer.writerow(['', 'سود اختصاصی خود حساب صندوق', '', '', '', fund_own_profit, '', ''])
+        writer.writerow(['', 'جمع مبالغ رسوب شده از اعضا', '', '', '', '', total_fund_resub_other, total_fund_resub_loan])
+        writer.writerow(['', 'مجموع کل سهم صندوق', '', '', '', fund_own_profit + total_fund_resub_other + total_fund_resub_loan, '', ''])
         
         return response
 
@@ -525,7 +671,8 @@ class ProfitRateAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
 
         transactions_to_create = []
         total_user_profit = 0
-        total_fund_resub = 0
+        total_fund_resub_other = 0
+        total_fund_resub_loan = 0
         fund_own_profit = 0
 
         for r in results:
@@ -543,22 +690,38 @@ class ProfitRateAdmin(ModelAdminJalaliMixin, admin.ModelAdmin):
                 else:
                     total_user_profit += u_total
 
-            total_fund_resub += r['fund_resub']
+            total_fund_resub_other += r['fund_resub_other']
+            total_fund_resub_loan += r['fund_resub_loan']
 
-        if total_fund_resub > 0:
-            fund_user = User.objects.filter(role='FUND_ACCOUNT').first()
-            if fund_user:
+        fund_user = User.objects.filter(role='FUND_ACCOUNT').first()
+        if fund_user:
+            if total_fund_resub_other > 0:
                 transactions_to_create.append(Transaction(
-                    user=fund_user, amount=total_fund_resub, transaction_type='MANUAL_PROFIT',
+                    user=fund_user, amount=total_fund_resub_other, transaction_type='MANUAL_PROFIT',
                     date=profit_transaction_date, effective_date=end_date_g,
                     is_verified=True, description=f"رسوب منابع خرد و غیرشمول - {desc_text}"
                 ))
+            if total_fund_resub_loan > 0:
+                transactions_to_create.append(Transaction(
+                    user=fund_user, amount=total_fund_resub_loan, transaction_type='LOAN_SAVING',
+                    date=profit_transaction_date, effective_date=end_date_g,
+                    is_verified=True, description=f"سود تولیدی از پس‌انداز وام‌ها - {desc_text}"
+                ))
+                # --- آپدیت جدول تخصیص‌ها ---
+                FundProfitAllocation.objects.update_or_create(
+                    date=end_date_g,
+                    defaults={
+                        'total_profit': fund_own_profit + total_fund_resub_other + total_fund_resub_loan,
+                        'loan_saving_share': total_fund_resub_loan,
+                        'description': f"تخصیص از {desc_text}"
+                    }
+                )
 
         if transactions_to_create:
             Transaction.objects.bulk_create(transactions_to_create)
 
-        self.message_user(request, f"✅ موفق: سود {month_name} با موفقیت تقسیم شد. مبلغ {total_user_profit:,} به اعضا، {fund_own_profit:,} به حساب خود صندوق و {total_fund_resub:,} رسوب منابع به حساب صندوق واریز شد.", messages.SUCCESS)
-
+        self.message_user(request, f"✅ موفق: سود {month_name} تقسیم شد. مبلغ {total_user_profit:,} به اعضا، {fund_own_profit + total_fund_resub_other:,} به صندوق و {total_fund_resub_loan:,} به پس‌انداز وام صندوق واریز شد.", messages.SUCCESS)
+        
 @admin.register(FundProfitAllocation)
 class FundProfitAllocationAdmin(admin.ModelAdmin):
     list_display = ['date', 'total_profit', 'loan_saving_share', 'qard_share']

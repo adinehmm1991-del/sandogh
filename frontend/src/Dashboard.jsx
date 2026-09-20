@@ -23,15 +23,10 @@ function Dashboard() {
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
   
-  // --- استیت‌های مربوط به صفحه‌بندی ---
-  
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
 
   const navigate = useNavigate();
-  const BASE_URL = '';
-
-  // --- جراحی: استخراج آیدی زیرمجموعه در سطح کل کامپوننت برای دکمه‌ها ---
   const queryParams = new URLSearchParams(window.location.search);
   const targetUserId = queryParams.get('user_id');
 
@@ -98,7 +93,7 @@ function Dashboard() {
       }
     };
     fetchData();
-  }, [navigate, window.location.search]);
+  }, [navigate, targetUserId]);
 
   const handleLogout = () => { localStorage.removeItem('token'); navigate('/'); };
 
@@ -146,6 +141,7 @@ function Dashboard() {
   return (
     <Container maxWidth="md" style={{ marginTop: '30px', marginBottom: '50px' }}>
       
+      {/* گزارش کلان هیئت مدیره (تفکیک شده و پاکسازی شده از موارد اضافی) */}
       {adminReport && (
         <Paper elevation={3} style={{ padding: '20px', marginBottom: '30px', borderTop: '5px solid #2e7d32', backgroundColor: '#f1f8e9' }}>
             <div style={{display:'flex', alignItems:'center', marginBottom:'15px', justifyContent:'space-between'}}>
@@ -162,10 +158,9 @@ function Dashboard() {
                 <Grid item xs={6} md={3}><Typography variant="body2">کل اعضای سیستم: <strong>{adminReport.total_members}</strong></Typography></Grid>
                 <Grid item xs={6} md={3}><Typography variant="body2">موجودی کل صندوق: <strong>{adminReport.total_capital?.toLocaleString()}</strong></Typography></Grid>
                 <Grid item xs={6} md={3}><Typography variant="body2">پس‌انداز وام: <strong>{adminReport.total_loan_saving?.toLocaleString()}</strong></Typography></Grid>
-                <Grid item xs={6} md={3}><Typography variant="body2">پس‌انداز سودده: <strong>{adminReport.total_profit_saving?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="body2">پس‌انداز کوتاه‌مدت: <strong>{adminReport.total_short_term?.toLocaleString()}</strong></Typography></Grid>
+                <Grid item xs={6} md={3}><Typography variant="body2">پس‌انداز بلندمدت: <strong>{adminReport.total_long_term?.toLocaleString()}</strong></Typography></Grid>
                 <Grid item xs={6} md={3}><Typography variant="body2">قرض‌الحسنه: <strong>{adminReport.total_qard?.toLocaleString()}</strong></Typography></Grid>
-                <Grid item xs={6} md={3}><Typography variant="body2">تعهدات ماهانه: <strong>{adminReport.total_commitments?.toLocaleString()}</strong></Typography></Grid>
-                <Grid item xs={12} md={6}><Typography variant="body2" color="error">کل برداشتی‌ها از ابتدا: <strong>{adminReport.total_withdrawal?.toLocaleString()}</strong></Typography></Grid>
             </Grid>
 
             <Divider style={{margin:'20px 0 15px 0', backgroundColor: '#81c784'}} />
@@ -202,7 +197,6 @@ function Dashboard() {
                 <Button variant="text" size="small" startIcon={<EditIcon />} onClick={() => navigate('/profile')}>ویرایش</Button>
                 <Button variant="text" size="small" color="warning" startIcon={<KeyIcon />} onClick={() => navigate('/change-password')}>تغییر رمز</Button>
                 
-                {/* دکمه ثبت خانواده فقط زمانی دیده می‌شود که در اکانت اصلی باشیم */}
                 {!targetUserId && (
                     <Button variant="outlined" size="small" color="secondary" startIcon={<FamilyRestroomIcon />} onClick={() => navigate('/family')}>ثبت نام خانواده</Button>
                 )}
@@ -215,6 +209,7 @@ function Dashboard() {
           </div>
         </div>
 
+        {/* کارت‌های آماری پروفایل شامل موجودی، سود تفکیک‌شده (برداشت شده و مانده قابل برداشت) و امتیاز وام */}
         <Grid container spacing={2}>
           <Grid item xs={12} md={4}>
             <Card style={{ background: 'linear-gradient(135deg, #1e88e5 0%, #1565c0 100%)', color: 'white' }}>
@@ -223,7 +218,15 @@ function Dashboard() {
                     <AccountBalanceWalletIcon style={{ opacity: 0.8, marginLeft: '8px' }} />
                     <Typography variant="subtitle2" style={{ opacity: 0.9 }}>موجودی کل</Typography>
                 </Box>
-                <Typography variant="h5" style={{ fontWeight: 'bold' }}>{data.current_balance?.toLocaleString()} <span style={{fontSize:'0.6em'}}>تومان</span></Typography>
+                <Typography variant="h5" style={{ fontWeight: 'bold', marginBottom: '8px' }}>
+                  {data.current_balance?.toLocaleString()} <span style={{fontSize:'0.6em'}}>تومان</span>
+                </Typography>
+                <div style={{ fontSize: '0.75rem', opacity: 0.9, backgroundColor: 'rgba(0,0,0,0.15)', padding: '6px', borderRadius: '5px' }}>
+                    <div style={{display:'flex', justifyContent:'space-between'}}><span>⏳ کوتاه‌مدت:</span><span>{data.balances?.short_term?.toLocaleString()}</span></div>
+                    <div style={{display:'flex', justifyContent:'space-between'}}><span>📈 بلندمدت:</span><span>{data.balances?.long_term?.toLocaleString()}</span></div>
+                    <div style={{display:'flex', justifyContent:'space-between'}}><span>💰 پس‌انداز وام:</span><span>{data.balances?.loan_saving?.toLocaleString()}</span></div>
+                    <div style={{display:'flex', justifyContent:'space-between'}}><span>🤝 قرض‌الحسنه:</span><span>{data.balances?.qard?.toLocaleString()}</span></div>
+                </div>
               </CardContent>
             </Card>
           </Grid>
@@ -233,9 +236,17 @@ function Dashboard() {
               <CardContent>
                 <Box display="flex" alignItems="center" mb={1}>
                     <TrendingUpIcon style={{ opacity: 0.8, marginLeft: '8px' }} />
-                    <Typography variant="subtitle2" style={{ opacity: 0.9 }}>سود دریافتی</Typography>
+                    <Typography variant="subtitle2" style={{ opacity: 0.9 }}>وضعیت سود</Typography>
                 </Box>
-                <Typography variant="h5" style={{ fontWeight: 'bold' }}>{data.total_profit_received?.toLocaleString()} <span style={{fontSize:'0.6em'}}>تومان</span></Typography>
+                {/* نمایش باقی‌مانده سود قابل برداشت به عنوان مقدار اصلی */}
+                <Typography variant="h5" style={{ fontWeight: 'bold', marginBottom: '8px' }}>
+                  {data.total_profit_received?.toLocaleString()} <span style={{fontSize:'0.6em'}}>تومان</span>
+                </Typography>
+                <div style={{ fontSize: '0.75rem', opacity: 0.9, backgroundColor: 'rgba(0,0,0,0.15)', padding: '6px', borderRadius: '5px' }}>
+                    <div style={{display:'flex', justifyContent:'space-between'}}><span>📥 کل سود واریزی:</span><span>{data.total_profit_credited?.toLocaleString()}</span></div>
+                    <div style={{display:'flex', justifyContent:'space-between'}}><span>📤 کل برداشت سود:</span><span>{data.profit_withdrawn?.toLocaleString()}</span></div>
+                    <div style={{display:'flex', justifyContent:'space-between', fontWeight:'bold', color:'#fffde7'}}><span>✨ باقی‌مانده قابل برداشت:</span><span>{data.total_profit_received?.toLocaleString()}</span></div>
+                </div>
               </CardContent>
             </Card>
           </Grid>
@@ -285,7 +296,6 @@ function Dashboard() {
 
         <Typography variant="h6" gutterBottom style={{fontWeight:'bold', color:'#333'}}>دسترسی سریع</Typography>
         <Grid container spacing={2} style={{ marginBottom: '30px' }}>
-            {/* --- جراحی: اضافه کردن ارسال user_id به آدرس‌های دکمه‌ها --- */}
             <Grid item xs={6} sm={3}>
                 <Button variant="contained" fullWidth style={{ height: '60px', background: 'linear-gradient(45deg, #2e7d32 30%, #4caf50 90%)', fontSize:'1rem' }} startIcon={<AddIcon />} onClick={() => navigate(targetUserId ? `/deposit?user_id=${targetUserId}` : '/deposit')}>واریز وجه</Button>
             </Grid>
@@ -340,7 +350,6 @@ function Dashboard() {
           </Table>
         </TableContainer>
         
-        {/* ابزار صفحه‌بندی بهینه‌شده برای جلوگیری از تداخل گرافیکی و کلیک */}
         <Box sx={{ display: 'flex', justifyContent: 'center', width: '100%', direction: 'ltr', backgroundColor: '#f9f9f9', borderBottomLeftRadius: '8px', borderBottomRightRadius: '8px' }}>
             <TablePagination
                 rowsPerPageOptions={[5, 10, 25, 50, 100]}

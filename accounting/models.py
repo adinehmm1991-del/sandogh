@@ -276,17 +276,30 @@ class LoanRequest(models.Model):
                         PointLog.objects.create(user=self.user, points=-self.points_cost, log_type=PointLog.Types.LOAN_USED, description=f"استفاده برای وام {self.amount:,} تومانی (شناسه {self.id})")
         except: pass
 
-# --- مدل‌های سود ---
+# --- مدل دوره‌های سود (ارتقا یافته به نسخه حرفه‌ای) ---
 class ProfitPeriod(models.Model):
-    name = models.CharField(max_length=100, verbose_name="نام دوره (مثلاً سال ۱۴۰۴)")
+    name = models.CharField(max_length=100, verbose_name="نام دوره (مثلاً ۳ ماهه بهار)")
     start_date = models.DateField(verbose_name="تاریخ شروع دوره")
     end_date = models.DateField(verbose_name="تاریخ پایان دوره")
-    total_profit_amount = models.BigIntegerField(default=0, verbose_name="مبلغ کل سود (تومان)")
+    total_profit_amount = models.BigIntegerField(default=0, verbose_name="مبلغ کل سود تولید شده در این دوره (تومان)")
+    
+    # تنظیمات اختصاصی سهم صندوق
+    fund_share_short_term = models.DecimalField(max_digits=5, decimal_places=2, default=50.00, verbose_name="سهم صندوق از سود کوتاه‌مدت (درصد)")
+    fund_share_long_term = models.DecimalField(max_digits=5, decimal_places=2, default=40.00, verbose_name="سهم صندوق از سود بلندمدت (درصد)")
+    
+    # تنظیمات تضمین حداقل سود
+    guarantee_short_term = models.DecimalField(max_digits=5, decimal_places=2, default=2.00, verbose_name="حداقل سود تضمینی کوتاه‌مدت (درصد کل دوره)")
+    guarantee_long_term = models.DecimalField(max_digits=5, decimal_places=2, default=3.00, verbose_name="حداقل سود تضمینی بلندمدت (درصد کل دوره)")
+    
+    # اتصال هوشمند به ماه‌هایی که علی‌الحساب پرداخت شده
+    included_months = models.ManyToManyField('ProfitRate', blank=True, verbose_name="ماه‌های علی‌الحساب (جهت کسر از سود قطعی)")
+    
     is_calculated = models.BooleanField(default=False, verbose_name="آیا سود این دوره محاسبه و تقسیم شده است؟")
     
     class Meta:
-        verbose_name = "دوره سود سالیانه"
-        verbose_name_plural = "دوره‌های سود سالیانه"
+        verbose_name = "دوره سود"
+        verbose_name_plural = "دوره‌های سود (قطعی/سالیانه)"
+        
     def __str__(self): return self.name
 
 class ProfitDistribution(models.Model):
@@ -324,17 +337,38 @@ class PointTransferRequest(models.Model):
         is_new = self.pk is None
         old_status = None
         if not is_new: old_status = PointTransferRequest.objects.get(pk=self.pk).status
+        
         super().save(*args, **kwargs)
+        
+        # --- جراحی اصلی: جداسازی منطق مالی از سیستم پیامک ---
+        
+        # ۱. کسر و اضافه کردن امتیاز در دیتابیس (خارج از try قرار گرفت تا کاملاً امن باشد)
+        if old_status != self.Status.APPROVED and self.status == self.Status.APPROVED:
+            PointLog.objects.create(
+                user=self.sender, points=-self.amount, 
+                log_type=PointLog.Types.TRANSFER_SENT, 
+                related_user=self.receiver, 
+                description=f"انتقال مستقیم به {self.receiver.full_name}"
+            )
+            PointLog.objects.create(
+                user=self.receiver, points=self.amount, 
+                log_type=PointLog.Types.TRANSFER_RECEIVED, 
+                related_user=self.sender, 
+                description=f"دریافت مستقیم از {self.sender.full_name}"
+            )
+
+        # ۲. سیستم اطلاع‌رسانی پیامکی (در بلاک try قرار دارد تا اگر قطع بود، سایت از کار نیفتد)
         try:
-            # ارسال به مدیر کل
-           if is_new and self.status == self.Status.PENDING:
+            if is_new and self.status == self.Status.PENDING: 
+                phones = get_admin_phones('general')
+                for phone in phones:
+                    send_pattern_sms(phone, 'transfer_request_admin', {'token1': self.sender.full_name, 'token2': self.receiver.full_name})
                     
             if old_status != self.Status.APPROVED and self.status == self.Status.APPROVED:
-                PointLog.objects.create(user=self.sender, points=-self.amount, log_type=PointLog.Types.TRANSFER_SENT, related_user=self.receiver, description=f"انتقال تایید شده به {self.receiver.full_name}")
-                PointLog.objects.create(user=self.receiver, points=self.amount, log_type=PointLog.Types.TRANSFER_RECEIVED, related_user=self.sender, description=f"دریافت تایید شده از {self.sender.full_name}")
                 target_phone = self.receiver.parent.phone_number if self.receiver.parent else self.receiver.phone_number
                 send_pattern_sms(target_phone, 'transfer_received_user', {'token1': self.receiver.full_name, 'token2': f"{self.amount:,}"})
-        except: pass
+        except: 
+            pass
 
 class ProfitRate(models.Model):
     month_year = models.DateField(verbose_name="ماه و سال", unique=True)
@@ -348,6 +382,12 @@ class ProfitRate(models.Model):
         verbose_name = "نرخ سود علی‌الحساب"
         verbose_name_plural = "نرخ‌های سود علی‌الحساب"
         ordering = ['-month_year']
+    def __str__(self):
+        import jdatetime
+        from django.utils import timezone
+        import datetime
+        local_date = timezone.localtime(self.month_year) if isinstance(self.month_year, datetime.datetime) else self.month_year
+        return f"سود علی‌الحساب {jdatetime.date.fromgregorian(date=local_date).strftime('%B %Y')}"
 
 # --- مدیریت سودهای کلاری/سرمایه‌گذاری صندوق (فاز ۴) ---
 class FundProfitAllocation(models.Model):
