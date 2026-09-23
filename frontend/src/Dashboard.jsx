@@ -70,12 +70,27 @@ function Dashboard() {
         let pendingWithdrawals = [];
         try {
             const withRes = await axios.get(withdrawalsUrl, config);
+            
+            // تخصیص نام صحیح به برداشت‌های در انتظار (برای جلوگیری از گم شدن نوع تراکنش)
+            const getPendingType = (source) => {
+                const map = {
+                    'SHORT_TERM': 'W_SHORT',
+                    'LONG_TERM': 'W_LONG',
+                    'LOAN': 'W_SAVING',
+                    'PROFIT': 'W_MAN_PROFIT',
+                    'QARD': 'W_QARD',
+                    'CULTURAL': 'W_CULTURAL',
+                    'FEE': 'W_FEE'
+                };
+                return map[source] || 'WITHDRAWAL_OTHER';
+            };
+
             pendingWithdrawals = withRes.data
                 .filter(w => w.status === 'PENDING')
                 .map(w => ({
                     id: `w_${w.id}`,
                     amount: w.amount,
-                    transaction_type: 'WITHDRAWAL_OTHER', 
+                    transaction_type: getPendingType(w.source_type),
                     date: w.created_at,
                     is_verified: false 
                 }));
@@ -103,11 +118,12 @@ function Dashboard() {
     setPage(0);
   };
 
+  // اصلاح نام‌گذاری‌ها در فرهنگ لغت فرانت‌اند
   const typeTranslate = {
     'SHORT_TERM': 'پس‌انداز کوتاه‌مدت',
     'LONG_TERM': 'پس‌انداز بلندمدت',
-    'MONTHLY': 'پس‌انداز بلندمدت', 
-    'PROFIT_SAVING': 'پس‌انداز بلندمدت', 
+    'MONTHLY': 'واریز ماهیانه', 
+    'PROFIT_SAVING': 'پس‌انداز سود', 
     'LOAN_SAVING': 'پس‌انداز وام',
     'QARD': 'قرض‌الحسنه',
     'FEE': 'حق عضویت',
@@ -125,8 +141,8 @@ function Dashboard() {
     'W_SHORT': 'برداشت (کوتاه‌مدت)',
     'W_LONG': 'برداشت (بلندمدت)',
     'W_SAVING': 'برداشت (پس‌انداز وام)',
-    'W_PROFIT': 'برداشت (بلندمدت)', 
-    'W_MONTHLY': 'برداشت (بلندمدت)', 
+    'W_PROFIT': 'برداشت (پس‌انداز سود)', 
+    'W_MONTHLY': 'برداشت (ماهیانه)', 
     'W_QARD': 'برداشت (قرض‌الحسنه)',
     'WITHDRAWAL_OTHER': 'برداشت وجه',
     'WITHDRAWAL': 'برداشت وجه',
@@ -141,7 +157,6 @@ function Dashboard() {
   return (
     <Container maxWidth="md" style={{ marginTop: '30px', marginBottom: '50px' }}>
       
-      {/* گزارش کلان هیئت مدیره (تفکیک شده و پاکسازی شده از موارد اضافی) */}
       {adminReport && (
         <Paper elevation={3} style={{ padding: '20px', marginBottom: '30px', borderTop: '5px solid #2e7d32', backgroundColor: '#f1f8e9' }}>
             <div style={{display:'flex', alignItems:'center', marginBottom:'15px', justifyContent:'space-between'}}>
@@ -209,7 +224,6 @@ function Dashboard() {
           </div>
         </div>
 
-        {/* کارت‌های آماری پروفایل شامل موجودی، سود تفکیک‌شده (برداشت شده و مانده قابل برداشت) و امتیاز وام */}
         <Grid container spacing={2}>
           <Grid item xs={12} md={4}>
             <Card style={{ background: 'linear-gradient(135deg, #1e88e5 0%, #1565c0 100%)', color: 'white' }}>
@@ -238,7 +252,6 @@ function Dashboard() {
                     <TrendingUpIcon style={{ opacity: 0.8, marginLeft: '8px' }} />
                     <Typography variant="subtitle2" style={{ opacity: 0.9 }}>وضعیت سود</Typography>
                 </Box>
-                {/* نمایش باقی‌مانده سود قابل برداشت به عنوان مقدار اصلی */}
                 <Typography variant="h5" style={{ fontWeight: 'bold', marginBottom: '8px' }}>
                   {data.total_profit_received?.toLocaleString()} <span style={{fontSize:'0.6em'}}>تومان</span>
                 </Typography>

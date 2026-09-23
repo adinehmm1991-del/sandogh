@@ -130,7 +130,7 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
         elif source_type == 'CULTURAL':
             related_deposit_types = [
                 'SADAQAH', 'WAQF', 'SACRIFICE', 'BOOK', 'KHOMS_IMAM', 'KHOMS_SADAT', 'MANUAL_PROFIT',
-                'WAQF_GEN', 'WAQF_BOOK', 'WAQF_MEDIA', 'WAQF_INFRA' # <--- این ۴ مورد اضافه شد
+                'WAQF_GEN', 'WAQF_BOOK', 'WAQF_MEDIA', 'WAQF_INFRA'
             ]
             related_withdrawal_types = ['W_CULTURAL']
         elif source_type == 'FEE':
@@ -145,7 +145,13 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
             user=user_to_check, transaction_type__in=related_withdrawal_types, is_verified=True
         ).aggregate(Sum('amount'))['amount__sum'] or 0
 
-        current_balance = total_deposited - total_withdrawn
+        # --- محاسبه درخواست‌های در انتظار (جلوگیری از ثبت تکراری) ---
+        pending_requests = WithdrawalRequest.objects.filter(
+            user=user_to_check, source_type=source_type, status=WithdrawalRequest.Status.PENDING
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+
+        # کسر درخواست‌های در انتظار از موجودی کل
+        current_balance = (total_deposited - total_withdrawn) - pending_requests
 
         if source_type == 'LONG_TERM' or source_type == 'CULTURAL':
             import datetime
@@ -153,22 +159,22 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
             
             if getattr(user_to_check, 'role', '') == 'CULTURAL':
                 if amount > current_balance:
-                    raise serializers.ValidationError({"amount": f"موجودی این حساب فرهنگی کافی نیست. موجودی: {current_balance:,} تومان"})
+                    raise serializers.ValidationError({"amount": f"موجودی این حساب فرهنگی کافی نیست. مبلغ قابل برداشت: {current_balance:,} تومان (با احتساب درخواست‌های در انتظار)"})
             else:
                 unlocked_deposits = Transaction.objects.filter(
                     user=user_to_check, transaction_type__in=related_deposit_types, is_verified=True, effective_date__lte=three_months_ago
                 ).aggregate(Sum('amount'))['amount__sum'] or 0
                 
-                available_balance = max(0, unlocked_deposits - total_withdrawn)
+                available_balance = max(0, unlocked_deposits - total_withdrawn) - pending_requests
                 
                 if amount > available_balance:
                     raise serializers.ValidationError({
-                        "amount": f"مبلغ درخواستی بلوکه است. موجودی قابل برداشت (که ۳ ماه از آن گذشته) {available_balance:,} تومان می‌باشد."
+                        "amount": f"مبلغ درخواستی بلوکه است یا درخواست در انتظاری دارید. موجودی قابل برداشت (که ۳ ماه از آن گذشته) {max(0, available_balance):,} تومان می‌باشد."
                     })
         else:
             if amount > current_balance:
                 raise serializers.ValidationError({
-                    "amount": f"موجودی این حساب کافی نیست. موجودی فعلی: {current_balance:,} تومان"
+                    "amount": f"موجودی کافی نیست یا درخواست در انتظاری در این صندوق دارید. موجودی قابل برداشت: {max(0, current_balance):,} تومان"
                 })
 
         return data
@@ -188,7 +194,7 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
 
         validated_data.pop('user', None)
         return WithdrawalRequest.objects.create(user=user_to_save, **validated_data)
-
+    
 class LoanRequestSerializer(serializers.ModelSerializer):
     target_user_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
 

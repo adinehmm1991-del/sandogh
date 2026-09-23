@@ -254,13 +254,13 @@ class UserDashboardView(APIView):
         def get_sum(queryset):
             return queryset.aggregate(Sum('amount'))['amount__sum'] or 0
 
-        # ۱. بررسی وضعیت فعالیت کاربر (پرداخت حق عضویت)
+        # ۱. بررسی وضعیت فعالیت کاربر
         fee_dep = get_sum(Transaction.objects.filter(user=user, transaction_type=Transaction.Types.MEMBERSHIP_FEE, is_verified=True))
         fee_wit = get_sum(Transaction.objects.filter(user=user, transaction_type=Transaction.Types.WITHDRAWAL_FEE, is_verified=True))
         has_paid_fee = (fee_dep - fee_wit) > 0
         is_user_active = has_paid_fee or user.role == 'CULTURAL'
 
-        # ۲. محاسبه امتیازات وام (اگر کاربر غیرفعال باشد، امتیاز صفر می‌شود)
+        # ۲. محاسبه امتیازات وام
         loan_saving_points = 0
         locked_saving_points = 0
         total_loan_points = 0
@@ -293,7 +293,6 @@ class UserDashboardView(APIView):
                     locked_saving_points = max(0, total_loan_points)
                     days_remaining_to_unlock = 90 - days_passed_since_start
 
-        # امتیاز صدقات و معرفی (ویژه کاربران فعال)
         donation_points = 0
         referral_loan_points = 0
         active_referrals_count = 0
@@ -316,8 +315,9 @@ class UserDashboardView(APIView):
         st_wit = get_sum(Transaction.objects.filter(user=user, transaction_type=Transaction.Types.WITHDRAWAL_SHORT, is_verified=True))
         st_bal = max(0, st_dep - st_wit)
 
-        lt_dep = get_sum(Transaction.objects.filter(user=user, transaction_type__in=[Transaction.Types.LONG_TERM, Transaction.Types.MONTHLY_DEPOSIT], is_verified=True))
-        lt_wit = get_sum(Transaction.objects.filter(user=user, transaction_type__in=[Transaction.Types.WITHDRAWAL_LONG, Transaction.Types.WITHDRAWAL_MONTHLY], is_verified=True))
+        # ⚠️ اصلاح نهایی: پس‌انداز سود (PROFIT_SAVING) دقیقاً به حساب بلندمدت اضافه شد
+        lt_dep = get_sum(Transaction.objects.filter(user=user, transaction_type__in=[Transaction.Types.LONG_TERM, Transaction.Types.MONTHLY_DEPOSIT, Transaction.Types.PROFIT_SAVING], is_verified=True))
+        lt_wit = get_sum(Transaction.objects.filter(user=user, transaction_type__in=[Transaction.Types.WITHDRAWAL_LONG, Transaction.Types.WITHDRAWAL_MONTHLY, Transaction.Types.WITHDRAWAL_PROFIT], is_verified=True))
         lt_bal = max(0, lt_dep - lt_wit)
 
         loan_dep_sum = get_sum(loan_deposits)
@@ -330,22 +330,22 @@ class UserDashboardView(APIView):
 
         fee_bal = max(0, fee_dep - fee_wit)
 
-        # ۴. محاسبه دقیق سود بر اساس تراکنش‌های زنده
+        # ۴. محاسبه دقیق سود (کارت سود حالا فقط و فقط متعلق به MANUAL_PROFIT است)
         profit_deposits = get_sum(Transaction.objects.filter(
             user=user, 
-            transaction_type__in=[Transaction.Types.MANUAL_PROFIT, Transaction.Types.PROFIT_SAVING], 
+            transaction_type=Transaction.Types.MANUAL_PROFIT, 
             is_verified=True
         ))
         profit_withdrawn = get_sum(Transaction.objects.filter(
             user=user, 
-            transaction_type__in=[Transaction.Types.WITHDRAWAL_MANUAL_PROFIT, Transaction.Types.WITHDRAWAL_PROFIT], 
+            transaction_type=Transaction.Types.WITHDRAWAL_MANUAL_PROFIT, 
             is_verified=True
         ))
         net_profit_available = max(0, profit_deposits - profit_withdrawn)
 
-        # ۵. محاسبه موجودی کل (جمع جبری مقادیر خالص تفکیک‌شده بدون کسر مجدد)
+        # ۵. موجودی کل
         current_balance = st_bal + lt_bal + loan_bal + qard_bal + fee_bal + net_profit_available
-
+        
         return Response({
             "full_name": user.full_name if user.full_name else user.phone_number,
             "membership_code": user.membership_code,
@@ -594,7 +594,7 @@ class PointTransferView(APIView):
             if target_user.id == user.id:
                 return Response({"error": "نمی‌توانید به خودتان انتقال دهید."}, status=400)
 
-            # --- جراحی: هماهنگی کامل فرمول با داشبورد و جلوگیری از منفی شدن ---
+            # --- فرمول دقیق و یکپارچه با داشبورد (با احتساب برداشت‌های وام و سقف صفر) ---
             today = datetime.date.today()
             loan_deposits = Transaction.objects.filter(user=user, transaction_type='LOAN_SAVING', is_verified=True).order_by('effective_date')
             loan_withdrawals = Transaction.objects.filter(user=user, transaction_type='W_SAVING', is_verified=True)
@@ -609,7 +609,7 @@ class PointTransferView(APIView):
                 days_active = (today - w.effective_date).days
                 if days_active > 0:
                     total_loan_points -= int((w.amount / 1000000) * 7000 * days_active)
-
+            
             loan_saving_points = 0
             if loan_deposits.exists():
                 first_date = loan_deposits.first().effective_date
@@ -624,11 +624,11 @@ class PointTransferView(APIView):
             
             man_points = PointLog.objects.filter(user=user).aggregate(Sum('points'))['points__sum'] or 0
             
-            # قرار دادن حد صفر (max 0) تا اگر کاربری در گذشته باگ خورده، امتیاز منفی در محاسبات لحاظ نشود
+            # محاسبه دقیق موجودی امتیاز با اعمال سقف صفر برای جلوگیری از منفی شدن
             current_total_points = max(0, loan_saving_points + don_points + ref_points + man_points)
 
             if current_total_points < points:
-                return Response({"error": f"امتیاز آزاد شما کافی نیست. موجودی قابل انتقال: {current_total_points:,}"}, status=400)
+                return Response({"error": f"امتیاز آزاد شما کافی نیست یا حساب شما فاقد اعتبار است. موجودی قابل انتقال: {current_total_points:,}"}, status=400)
 
             PointTransferRequest.objects.create(
                 sender=user,
